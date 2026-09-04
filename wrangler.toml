@@ -1,0 +1,15 @@
+name = "requeue"
+main = "src/index.ts"
+compatibility_date = "2026-09-04"
+
+# Local / CI can use this placeholder. After `npm run db:create`,
+# replace database_id with the UUID Wrangler prints.
+[[d1_databases]]
+binding = "DB"
+database_name = "requeue"
+database_id = "00000000-0000-4000-8000-000000000001"
+migrations_dir = "migrations"
+
+# D1-backed outbox drain — not Cloudflare Queues (paid).
+[triggers]
+crons = ["* * * * *"]

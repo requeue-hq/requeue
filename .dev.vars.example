@@ -1,0 +1,2 @@
+# No secrets are required for the local demo key.
+# Rotate the seeded demo key before any shared or production deploy.
