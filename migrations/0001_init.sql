@@ -61,15 +61,6 @@ CREATE TABLE api_keys (
 
 CREATE INDEX idx_api_keys_project_id ON api_keys(project_id);
 
--- Demo tenant + hashed management key (see README).
--- Plaintext: rq_demo_local_dev_only_do_not_use_in_prod
-INSERT INTO projects (id, name) VALUES ('prj_demo', 'Demo project');
-
-INSERT INTO api_keys (id, project_id, name, key_hash, key_prefix)
-VALUES (
-  'key_demo',
-  'prj_demo',
-  'Demo management key',
-  'ea489957fc62094c0071d21898c261e18b9c04daedb39bc2f8392137fd6a6ccb',
-  'rq_demo_'
-);
+-- Do not seed a management key here. This file is applied to hosted D1.
+-- Local Wrangler/dev uses scripts/seed-local.sql (npm run db:migrate).
+-- Hosted keys are minted via POST /v1/api-keys (BOOTSTRAP_SECRET).

@@ -10,7 +10,10 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations },
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            BOOTSTRAP_SECRET: "test-bootstrap-secret-do-not-use-in-prod",
+          },
         },
       }),
     ],

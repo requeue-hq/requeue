@@ -1,2 +1,6 @@
-# No secrets are required for the local demo key.
-# Rotate the seeded demo key before any shared or production deploy.
+# Local Wrangler/dev uses scripts/seed-local.sql — LOCAL ONLY.
+# That key is not valid on hosted production (api.getrequeue.com).
+#
+# Optional: set this to exercise POST /v1/api-keys bootstrap locally.
+# On hosted, set it with `npx wrangler secret put BOOTSTRAP_SECRET`.
+# BOOTSTRAP_SECRET=change-me-to-a-long-random-string

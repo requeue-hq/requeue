@@ -1,7 +1,51 @@
-import type { ApiKeyRow, EndpointRow, EventRow, EventStatus, ReplayAttemptRow } from "./types";
+import type { ApiKeyRow, EndpointRow, EventRow, EventStatus, ProjectRow, ReplayAttemptRow } from "./types";
 
 export async function findApiKeyByHash(db: D1Database, keyHash: string): Promise<ApiKeyRow | null> {
   return db.prepare("SELECT * FROM api_keys WHERE key_hash = ?").bind(keyHash).first<ApiKeyRow>();
+}
+
+export async function insertProject(db: D1Database, row: ProjectRow): Promise<void> {
+  await db
+    .prepare("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
+    .bind(row.id, row.name, row.created_at)
+    .run();
+}
+
+export async function insertApiKey(db: D1Database, row: ApiKeyRow): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO api_keys (id, project_id, name, key_hash, key_prefix, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(row.id, row.project_id, row.name, row.key_hash, row.key_prefix, row.created_at)
+    .run();
+}
+
+export async function listApiKeysForProject(db: D1Database, projectId: string): Promise<ApiKeyRow[]> {
+  const result = await db
+    .prepare("SELECT * FROM api_keys WHERE project_id = ? ORDER BY created_at DESC")
+    .bind(projectId)
+    .all<ApiKeyRow>();
+  return result.results ?? [];
+}
+
+export async function findApiKeyForProject(
+  db: D1Database,
+  keyId: string,
+  projectId: string,
+): Promise<ApiKeyRow | null> {
+  return db
+    .prepare("SELECT * FROM api_keys WHERE id = ? AND project_id = ?")
+    .bind(keyId, projectId)
+    .first<ApiKeyRow>();
+}
+
+export async function deleteApiKey(db: D1Database, keyId: string, projectId: string): Promise<boolean> {
+  const result = await db
+    .prepare("DELETE FROM api_keys WHERE id = ? AND project_id = ?")
+    .bind(keyId, projectId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 export async function insertEndpoint(

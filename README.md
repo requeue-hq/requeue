@@ -82,20 +82,15 @@ Replay is synchronous by default: Requeue POSTs the stored payload to `target_ur
 
 ## API keys
 
-There is **no** HTTP route that mints a management key. `POST /v1/endpoints` creates an ingest endpoint (replay target), not an API key. The Worker hashes the Bearer token with SHA-256 and looks it up in `api_keys` ([`src/auth.ts`](src/auth.ts)).
+The Worker hashes the Bearer token with SHA-256 and looks it up in `api_keys` ([`src/auth.ts`](src/auth.ts)). `POST /v1/endpoints` creates an ingest endpoint (replay target), not a management key.
 
-Keys enter D1 only through SQL:
-
-1. **Seed** — [`migrations/0001_init.sql`](migrations/0001_init.sql) inserts project `prj_demo` and the hash of the demo key below. Local `npm run db:migrate` and remote `npm run db:migrate:remote` both apply that seed. The hosted D1 behind `https://api.getrequeue.com` currently has this row, so the same key works against hosted as a **shared public demo tenant**.
-2. **Manual insert** — for a private tenant, `INSERT` a `projects` row and an `api_keys` row whose `key_hash` is `sha256(plaintext)` hex. See [docs/api-keys.md](docs/api-keys.md).
+**Local only.** `npm run db:migrate` applies schema migrations, then [`scripts/seed-local.sql`](scripts/seed-local.sql). That seed is for Wrangler/dev and tests. It is **not** applied by `npm run db:migrate:remote` and is **not** valid on `https://api.getrequeue.com`.
 
 ```
 rq_demo_local_dev_only_do_not_use_in_prod
 ```
 
-SHA-256 (stored in D1): `ea489957fc62094c0071d21898c261e18b9c04daedb39bc2f8392137fd6a6ccb`
-
-Do not put private payloads on the hosted demo tenant. Rotate or replace this seed before treating any Worker as private.
+**Hosted.** Mint a key with `POST /v1/api-keys` and Worker secret `BOOTSTRAP_SECRET` (`X-Requeue-Bootstrap-Secret`). See [docs/api-keys.md](docs/api-keys.md) and the production runbook [docs/ops-maya.md](docs/ops-maya.md). Shared migration `0002_revoke_public_demo_key.sql` deletes the historical public demo hash from hosted D1 if it was ever seeded.
 
 ## Quickstart
 
@@ -118,7 +113,7 @@ curl -sS http://127.0.0.1:8787/health
 # {"ok":true,"service":"requeue","version":"0.1.0"}
 ```
 
-Create an endpoint, ingest a failure, then replay — using the seeded demo key:
+Create an endpoint, ingest a failure, then replay — using the **local-only** seed key (not valid on hosted):
 
 ```bash
 curl -sS http://127.0.0.1:8787/v1/endpoints \
@@ -150,40 +145,30 @@ curl -sS -X POST http://127.0.0.1:8787/v1/events/evt_REPLACE_ME/replay \
 
 ### Hosted (`https://api.getrequeue.com`)
 
-Same routes, same seed key (the hosted D1 applied `0001_init.sql`). Treat hosted as a shared demo, not a private inbox.
+Same routes. **Do not** send the local demo key to hosted — it is not a production credential. Mint a private key first ([docs/api-keys.md](docs/api-keys.md)):
 
 ```bash
 curl -sS https://api.getrequeue.com/health
 # {"ok":true,"service":"requeue","version":"0.1.0"}
 
+curl -sS https://api.getrequeue.com/v1/api-keys \
+  -H "Content-Type: application/json" \
+  -H "X-Requeue-Bootstrap-Secret: $BOOTSTRAP_SECRET" \
+  -d '{"name":"Production key","project_name":"Production"}'
+
+export REQUEUE_KEY=rq_PASTE_TOKEN_FROM_RESPONSE
+
 curl -sS https://api.getrequeue.com/v1/endpoints \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod" \
+  -H "Authorization: Bearer $REQUEUE_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Orders worker",
     "target_url": "https://httpbin.org/post",
     "secret": "optional-hmac-secret"
   }'
-
-curl -sS https://api.getrequeue.com/v1/ingest/epk_REPLACE_ME \
-  -H "Content-Type: application/json" \
-  -d '{
-    "payload": { "order_id": "ord_123", "amount": 4200 },
-    "reason": "fulfillment timeout",
-    "source": "worker"
-  }'
-
-curl -sS "https://api.getrequeue.com/v1/events?status=failed" \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
-
-curl -sS https://api.getrequeue.com/v1/events/evt_REPLACE_ME \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
-
-curl -sS -X POST https://api.getrequeue.com/v1/events/evt_REPLACE_ME/replay \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
 ```
 
-Inspect and replay from the dashboard: open [getrequeue.com/app.html](https://getrequeue.com/app.html), set API base URL to `https://api.getrequeue.com`, and paste the demo key. Or use the [JS SDK](https://github.com/requeue-hq/requeue-sdk-js) with `baseUrl: "https://api.getrequeue.com"`.
+Inspect and replay from the dashboard: open [getrequeue.com/app.html](https://getrequeue.com/app.html), set API base URL to `https://api.getrequeue.com`, and paste **your** minted key. Or use the [JS SDK](https://github.com/requeue-hq/requeue-sdk-js) with `baseUrl: "https://api.getrequeue.com"`.
 
 Note `endpoint.endpoint_key` from the create-endpoint response, then substitute `epk_REPLACE_ME` / `evt_REPLACE_ME`.
 
@@ -200,8 +185,9 @@ Replay POSTs the **original stored payload** (not the ingest envelope) to `targe
 | `npm run dev` | `wrangler dev` |
 | `npm test` | ingest + replay tests |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run db:migrate` | apply D1 migrations locally |
-| `npm run db:migrate:remote` | apply migrations to remote D1 |
+| `npm run db:migrate` | apply D1 migrations locally, then the **local-only** seed |
+| `npm run db:seed:local` | re-apply the local-only demo key (never use on remote) |
+| `npm run db:migrate:remote` | apply migrations to remote D1 (no demo seed) |
 | `npm run deploy` | deploy the Worker |
 
 ## HTTP API
@@ -209,6 +195,9 @@ Replay POSTs the **original stored payload** (not the ingest envelope) to `targe
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | `GET` | `/health` | none | Liveness + D1 ping |
+| `POST` | `/v1/api-keys` | bootstrap secret or Bearer | Mint a management key (bootstrap also creates a project) |
+| `GET` | `/v1/api-keys` | Bearer | List keys for the current project |
+| `DELETE` | `/v1/api-keys/:id` | Bearer | Revoke a key |
 | `POST` | `/v1/endpoints` | Bearer | Create an endpoint (`target_url`, optional `secret`) |
 | `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event |
 | `GET` | `/v1/events` | Bearer | List events; `?status=` + `?limit=` |
@@ -216,7 +205,7 @@ Replay POSTs the **original stored payload** (not the ingest envelope) to `targe
 | `POST` | `/v1/events/:id/replay` | Bearer | Deliver payload now, or `{ "enqueue": true }` |
 | `GET` | `/v1/billing` | Bearer | Billing stub |
 
-There is no `POST /v1/keys` (or similar). See [API keys](#api-keys).
+See [API keys](#api-keys).
 
 Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`.
 
@@ -237,7 +226,7 @@ If `payload` is omitted, the raw request body is stored as the failure payload. 
 
 ## Schema
 
-SQL lives in [`migrations/0001_init.sql`](migrations/0001_init.sql).
+Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Hosted also applies [`migrations/0002_revoke_public_demo_key.sql`](migrations/0002_revoke_public_demo_key.sql). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
 
 | Table | Role |
 | --- | --- |
@@ -264,10 +253,12 @@ npx wrangler d1 migrations create requeue <name>
 
 1. `npx wrangler login`
 2. `npm run db:create` and paste the printed `database_id` into `wrangler.toml`
-3. `npm run db:migrate:remote`
-4. `npm run deploy`
+3. `npx wrangler secret put BOOTSTRAP_SECRET`
+4. `npm run db:migrate:remote`
+5. `npm run deploy`
+6. `POST /v1/api-keys` with `X-Requeue-Bootstrap-Secret` to mint the first management key
 
-`db:migrate:remote` seeds the demo key. Replace it (D1 `INSERT` of a new hash, then delete `key_demo`) before exposing a private Worker. The hosted API at `api.getrequeue.com` still uses that seed as a public demo.
+`db:migrate:remote` does **not** seed a public demo key. `0002` revokes that hash if an older `0001` inserted it. See [docs/ops-maya.md](docs/ops-maya.md).
 
 ## Billing
 
@@ -280,7 +271,7 @@ npm test
 npm run typecheck
 ```
 
-Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path.
+Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path plus local demo-key and bootstrap minting.
 
 ## License
 
