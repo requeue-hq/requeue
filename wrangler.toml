@@ -9,6 +9,10 @@ database_name = "requeue"
 database_id = "0b0d372c-cccb-4ea8-9d12-9a453419ac3a"
 migrations_dir = "migrations"
 
+# Hosted bootstrap secret — set with `npx wrangler secret put BOOTSTRAP_SECRET`.
+# Do not put the value in [vars] or commit it. Required to mint the first
+# production API key via POST /v1/api-keys. See docs/api-keys.md.
+
 # D1-backed outbox drain — not Cloudflare Queues (paid).
 [triggers]
 crons = ["* * * * *"]

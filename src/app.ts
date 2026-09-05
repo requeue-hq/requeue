@@ -1,12 +1,17 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { requireApiKey } from "./auth";
-import { newId } from "./crypto";
+import { bearerToken, requireApiKey, resolveApiKey } from "./auth";
+import { newApiKeyToken, newId, secretsMatch, sha256Hex } from "./crypto";
 import {
+  deleteApiKey,
+  findApiKeyForProject,
   findEndpointByKey,
   findEventForProject,
+  insertApiKey,
   insertEndpoint,
   insertEvent,
+  insertProject,
+  listApiKeysForProject,
   listEventsForProject,
   listReplayAttempts,
   updateEventStatus,
@@ -15,8 +20,8 @@ import { ApiError, jsonError } from "./errors";
 import { asRecord, nowIso } from "./json";
 import { processPendingReplays } from "./outbox";
 import { replayEventForProject } from "./replay";
-import { publicAttempt, publicEndpoint, publicEvent } from "./serialize";
-import type { AppEnv, EventStatus } from "./types";
+import { publicApiKey, publicAttempt, publicEndpoint, publicEvent, publicProject } from "./serialize";
+import type { ApiKeyRow, AppEnv, EventStatus, ProjectRow } from "./types";
 
 const EVENT_STATUSES = new Set<EventStatus>([
   "failed",
@@ -48,6 +53,67 @@ app.get("/health", async (c) => {
     service: "requeue",
     version: "0.1.0",
   });
+});
+
+app.post("/v1/api-keys", async (c) => {
+  const body = (await readOptionalJsonObject(c.req)) ?? {};
+  const name = asString(body.name) || "Management key";
+  const authorization = c.req.header("Authorization");
+
+  if (authorization) {
+    if (!authorization.startsWith("Bearer ")) {
+      return jsonError(c, 401, "unauthorized", "Missing Authorization: Bearer <api_key>");
+    }
+    if (!bearerToken(authorization)) {
+      return jsonError(c, 401, "unauthorized", "Missing API key");
+    }
+    const existing = await resolveApiKey(c.env.DB, authorization);
+    if (!existing) {
+      return jsonError(c, 401, "unauthorized", "Invalid API key");
+    }
+    const minted = await mintApiKey(c.env.DB, existing.project_id, name);
+    return c.json({ api_key: publicApiKey(minted.row, minted.token) }, 201);
+  }
+
+  const provided = c.req.header("X-Requeue-Bootstrap-Secret")?.trim() ?? "";
+  const expected = c.env.BOOTSTRAP_SECRET?.trim() ?? "";
+  if (!(await secretsMatch(provided, expected))) {
+    return jsonError(c, 401, "unauthorized", "Valid API key or bootstrap secret required");
+  }
+
+  const createdAt = nowIso();
+  const project: ProjectRow = {
+    id: newId("prj"),
+    name: asString(body.project_name) || "Default project",
+    created_at: createdAt,
+  };
+  await insertProject(c.env.DB, project);
+  const minted = await mintApiKey(c.env.DB, project.id, name);
+  return c.json(
+    {
+      api_key: publicApiKey(minted.row, minted.token),
+      project: publicProject(project),
+    },
+    201,
+  );
+});
+
+app.get("/v1/api-keys", requireApiKey, async (c) => {
+  const keys = await listApiKeysForProject(c.env.DB, c.get("projectId"));
+  return c.json({
+    api_keys: keys.map((row) => publicApiKey(row)),
+    count: keys.length,
+  });
+});
+
+app.delete("/v1/api-keys/:id", requireApiKey, async (c) => {
+  const key = await findApiKeyForProject(c.env.DB, c.req.param("id"), c.get("projectId"));
+  if (!key) {
+    return jsonError(c, 404, "not_found", "API key not found");
+  }
+
+  await deleteApiKey(c.env.DB, key.id, key.project_id);
+  return c.json({ deleted: true, id: key.id });
 });
 
 app.get("/v1/billing", requireApiKey, (c) => {
@@ -273,4 +339,23 @@ function clampInt(value: string | undefined, fallback: number, min: number, max:
   const parsed = Number.parseInt(value ?? "", 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+async function mintApiKey(
+  db: D1Database,
+  projectId: string,
+  name: string,
+): Promise<{ row: ApiKeyRow; token: string }> {
+  const { token, prefix } = newApiKeyToken();
+  const createdAt = nowIso();
+  const row: ApiKeyRow = {
+    id: newId("key"),
+    project_id: projectId,
+    name,
+    key_hash: await sha256Hex(token),
+    key_prefix: prefix,
+    created_at: createdAt,
+  };
+  await insertApiKey(db, row);
+  return { row, token };
 }

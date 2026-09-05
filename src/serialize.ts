@@ -1,5 +1,24 @@
 import { parseJson } from "./json";
-import type { EndpointRow, EventRow, ReplayAttemptRow } from "./types";
+import type { ApiKeyRow, EndpointRow, EventRow, ProjectRow, ReplayAttemptRow } from "./types";
+
+export function publicProject(row: ProjectRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    created_at: row.created_at,
+  };
+}
+
+export function publicApiKey(row: ApiKeyRow, token?: string) {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    name: row.name,
+    key_prefix: row.key_prefix,
+    created_at: row.created_at,
+    ...(token ? { token } : {}),
+  };
+}
 
 export function publicEndpoint(row: EndpointRow) {
   return {

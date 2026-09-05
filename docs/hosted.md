@@ -23,17 +23,19 @@ The dashboard is the `app.html` inbox in [requeue-web](https://github.com/requeu
 | | Local | Hosted |
 | --- | --- | --- |
 | Base URL | `http://127.0.0.1:8787` (`npm run dev`) | `https://api.getrequeue.com` |
-| Schema | `npm run db:migrate` | already applied on the hosted D1 |
-| Management key | seed from `0001_init.sql` | **same seed** — see [api-keys.md](api-keys.md) |
+| Schema | `npm run db:migrate` (migrations + **local-only** seed) | `npm run db:migrate:remote` (schema + demo-key revoke; **no** public seed) |
+| Management key | local seed only — see [api-keys.md](api-keys.md) | mint via `POST /v1/api-keys` + `BOOTSTRAP_SECRET` |
 | Inbox UI | serve requeue-web locally (`app.html`) | https://getrequeue.com/app.html |
 
-There is no separate hosted-only API. Same Hono routes, same auth.
+Same Hono routes and auth. The local demo key is **not** a hosted credential.
 
 ## Hosted curl
 
+Mint a key first ([api-keys.md](api-keys.md), [ops-maya.md](ops-maya.md)), then:
+
 ```bash
 export REQUEUE_API=https://api.getrequeue.com
-export REQUEUE_KEY=rq_demo_local_dev_only_do_not_use_in_prod
+export REQUEUE_KEY=rq_your_private_key
 
 curl -sS "$REQUEUE_API/health"
 
@@ -45,7 +47,7 @@ curl -sS "$REQUEUE_API/v1/endpoints" \
 
 Use `endpoint.endpoint_key` from the response for `POST /v1/ingest/:endpointKey`. List and replay with the same Bearer key.
 
-The hosted demo tenant is shared and public. Do not ingest private payloads there.
+Do not send the local demo key to hosted. Do not ingest private payloads with a key you do not control.
 
 ## SDK against hosted
 
@@ -53,7 +55,7 @@ The hosted demo tenant is shared and public. Do not ingest private payloads ther
 import { Requeue } from "@requeue-hq/sdk";
 
 const requeue = new Requeue({
-  apiKey: process.env.REQUEUE_API_KEY ?? "rq_demo_local_dev_only_do_not_use_in_prod",
+  apiKey: process.env.REQUEUE_API_KEY!,
   baseUrl: "https://api.getrequeue.com",
 });
 ```

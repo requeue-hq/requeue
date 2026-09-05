@@ -16,7 +16,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:create": "wrangler d1 create requeue",
-    "db:migrate": "wrangler d1 migrations apply requeue --local",
+    "db:migrate": "wrangler d1 migrations apply requeue --local && wrangler d1 execute requeue --local --file=scripts/seed-local.sql",
+    "db:seed:local": "wrangler d1 execute requeue --local --file=scripts/seed-local.sql",
     "db:migrate:remote": "wrangler d1 migrations apply requeue --remote",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },

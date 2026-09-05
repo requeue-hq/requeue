@@ -1,6 +1,8 @@
 interface CloudflareBindings {
   DB: D1Database;
+  BOOTSTRAP_SECRET?: string;
   TEST_MIGRATIONS?: D1Migration[];
+  TEST_LOCAL_SEED?: string;
 }
 
 interface D1Migration {
