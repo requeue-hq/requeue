@@ -2,9 +2,28 @@
 
 **Catch failed webhooks & jobs. Replay them.**
 
-Requeue is an open-source dead-letter inbox for webhooks, cron jobs, and background workers. When something fails, send Requeue the payload and the reason. Inspect it later, then one-click replay the original request to the configured target.
+Requeue is an open-core dead-letter inbox for webhooks, cron jobs, and background workers. When something fails, send Requeue the payload and the reason. Inspect it later, then one-click replay the original request to the configured target.
 
-This repository is the **open-source core API** (Cloudflare Workers + D1). The marketing site lives in [requeue-web](https://github.com/requeue-hq/requeue-web) and is not part of this repo.
+This repository is the **MIT core API** (Cloudflare Workers + D1). A hosted Worker is live; the marketing site and dashboard live in [requeue-web](https://github.com/requeue-hq/requeue-web).
+
+- **Product:** [getrequeue.com](https://getrequeue.com)
+- **Hosted API:** [api.getrequeue.com](https://api.getrequeue.com)
+- **JS SDK:** [requeue-sdk-js](https://github.com/requeue-hq/requeue-sdk-js)
+- **Org:** [github.com/requeue-hq](https://github.com/requeue-hq)
+
+## Status
+
+The hosted stack is live. Model: **open-core MIT + hosted**.
+
+| Surface | URL | Notes |
+| --- | --- | --- |
+| Marketing | [getrequeue.com](https://getrequeue.com) | Waitlist + product |
+| Hosted API | [api.getrequeue.com](https://api.getrequeue.com) | `GET /health` → `{"ok":true,"service":"requeue","version":"0.1.0"}` |
+| Dashboard | [getrequeue.com/app.html](https://getrequeue.com/app.html) | Client-only inbox (`app.html` in requeue-web). Paste API base URL + Bearer key |
+| JS SDK | [requeue-hq/requeue-sdk-js](https://github.com/requeue-hq/requeue-sdk-js) | `@requeue-hq/sdk` |
+| This repo | [requeue-hq/requeue](https://github.com/requeue-hq/requeue) | Open-source Worker + D1 schema |
+
+More on the live stack and keys: [docs/hosted.md](docs/hosted.md), [docs/api-keys.md](docs/api-keys.md).
 
 ## Elevator pitch
 
@@ -61,9 +80,28 @@ flowchart LR
 
 Replay is synchronous by default: Requeue POSTs the stored payload to `target_url` and writes a `replay_attempts` row. Pass `{"enqueue": true}` to mark the event `pending_replay`; a once-a-minute cron drains that D1 outbox. Cloudflare Queues are not used.
 
-## Quickstart (local)
+## API keys
 
-Requires Node.js 20+ and a Cloudflare account only when you deploy. Local mode uses Wrangler’s D1 emulator.
+There is **no** HTTP route that mints a management key. `POST /v1/endpoints` creates an ingest endpoint (replay target), not an API key. The Worker hashes the Bearer token with SHA-256 and looks it up in `api_keys` ([`src/auth.ts`](src/auth.ts)).
+
+Keys enter D1 only through SQL:
+
+1. **Seed** — [`migrations/0001_init.sql`](migrations/0001_init.sql) inserts project `prj_demo` and the hash of the demo key below. Local `npm run db:migrate` and remote `npm run db:migrate:remote` both apply that seed. The hosted D1 behind `https://api.getrequeue.com` currently has this row, so the same key works against hosted as a **shared public demo tenant**.
+2. **Manual insert** — for a private tenant, `INSERT` a `projects` row and an `api_keys` row whose `key_hash` is `sha256(plaintext)` hex. See [docs/api-keys.md](docs/api-keys.md).
+
+```
+rq_demo_local_dev_only_do_not_use_in_prod
+```
+
+SHA-256 (stored in D1): `ea489957fc62094c0071d21898c261e18b9c04daedb39bc2f8392137fd6a6ccb`
+
+Do not put private payloads on the hosted demo tenant. Rotate or replace this seed before treating any Worker as private.
+
+## Quickstart
+
+### Local (Wrangler)
+
+Requires Node.js 20+. A Cloudflare account is only needed when you deploy. Local mode uses Wrangler’s D1 emulator.
 
 ```bash
 git clone https://github.com/requeue-hq/requeue.git
@@ -73,7 +111,87 @@ npm run db:migrate
 npm run dev
 ```
 
-Wrangler listens on `http://127.0.0.1:8787`.
+Wrangler listens on `http://127.0.0.1:8787`. Health (no auth):
+
+```bash
+curl -sS http://127.0.0.1:8787/health
+# {"ok":true,"service":"requeue","version":"0.1.0"}
+```
+
+Create an endpoint, ingest a failure, then replay — using the seeded demo key:
+
+```bash
+curl -sS http://127.0.0.1:8787/v1/endpoints \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Orders worker",
+    "target_url": "https://httpbin.org/post",
+    "secret": "optional-hmac-secret"
+  }'
+
+curl -sS http://127.0.0.1:8787/v1/ingest/epk_REPLACE_ME \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": { "order_id": "ord_123", "amount": 4200 },
+    "reason": "fulfillment timeout",
+    "source": "worker"
+  }'
+
+curl -sS "http://127.0.0.1:8787/v1/events?status=failed" \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+
+curl -sS http://127.0.0.1:8787/v1/events/evt_REPLACE_ME \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+
+curl -sS -X POST http://127.0.0.1:8787/v1/events/evt_REPLACE_ME/replay \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+```
+
+### Hosted (`https://api.getrequeue.com`)
+
+Same routes, same seed key (the hosted D1 applied `0001_init.sql`). Treat hosted as a shared demo, not a private inbox.
+
+```bash
+curl -sS https://api.getrequeue.com/health
+# {"ok":true,"service":"requeue","version":"0.1.0"}
+
+curl -sS https://api.getrequeue.com/v1/endpoints \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Orders worker",
+    "target_url": "https://httpbin.org/post",
+    "secret": "optional-hmac-secret"
+  }'
+
+curl -sS https://api.getrequeue.com/v1/ingest/epk_REPLACE_ME \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": { "order_id": "ord_123", "amount": 4200 },
+    "reason": "fulfillment timeout",
+    "source": "worker"
+  }'
+
+curl -sS "https://api.getrequeue.com/v1/events?status=failed" \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+
+curl -sS https://api.getrequeue.com/v1/events/evt_REPLACE_ME \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+
+curl -sS -X POST https://api.getrequeue.com/v1/events/evt_REPLACE_ME/replay \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+```
+
+Inspect and replay from the dashboard: open [getrequeue.com/app.html](https://getrequeue.com/app.html), set API base URL to `https://api.getrequeue.com`, and paste the demo key. Or use the [JS SDK](https://github.com/requeue-hq/requeue-sdk-js) with `baseUrl: "https://api.getrequeue.com"`.
+
+Note `endpoint.endpoint_key` from the create-endpoint response, then substitute `epk_REPLACE_ME` / `evt_REPLACE_ME`.
+
+Replay POSTs the **original stored payload** (not the ingest envelope) to `target_url`. If the endpoint has a `secret`, Requeue adds:
+
+- `X-Requeue-Event-Id`
+- `X-Requeue-Timestamp`
+- `X-Requeue-Signature: sha256=<hmac>` over `{timestamp}.{eventId}.{payload}`
 
 ### Scripts
 
@@ -86,68 +204,6 @@ Wrangler listens on `http://127.0.0.1:8787`.
 | `npm run db:migrate:remote` | apply migrations to remote D1 |
 | `npm run deploy` | deploy the Worker |
 
-### Demo management key
-
-The first migration seeds a **local/demo** project and API key. Do not use it in production.
-
-```
-rq_demo_local_dev_only_do_not_use_in_prod
-```
-
-SHA-256 (stored in D1): `ea489957fc62094c0071d21898c261e18b9c04daedb39bc2f8392137fd6a6ccb`
-
-## Curl happy path
-
-Create an endpoint (the URL that should receive replays):
-
-```bash
-curl -sS http://127.0.0.1:8787/v1/endpoints \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Orders worker",
-    "target_url": "https://httpbin.org/post",
-    "secret": "optional-hmac-secret"
-  }'
-```
-
-Note `endpoint.endpoint_key` from the response, then report a failure:
-
-```bash
-curl -sS http://127.0.0.1:8787/v1/ingest/epk_REPLACE_ME \
-  -H "Content-Type: application/json" \
-  -d '{
-    "payload": { "order_id": "ord_123", "amount": 4200 },
-    "reason": "fulfillment timeout",
-    "source": "worker"
-  }'
-```
-
-List failures, fetch one, then replay it:
-
-```bash
-curl -sS "http://127.0.0.1:8787/v1/events?status=failed" \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
-
-curl -sS http://127.0.0.1:8787/v1/events/evt_REPLACE_ME \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
-
-curl -sS -X POST http://127.0.0.1:8787/v1/events/evt_REPLACE_ME/replay \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
-```
-
-Replay POSTs the **original stored payload** (not the ingest envelope) to `target_url`. If the endpoint has a `secret`, Requeue adds:
-
-- `X-Requeue-Event-Id`
-- `X-Requeue-Timestamp`
-- `X-Requeue-Signature: sha256=<hmac>` over `{timestamp}.{eventId}.{payload}`
-
-Health check (no auth):
-
-```bash
-curl -sS http://127.0.0.1:8787/health
-```
-
 ## HTTP API
 
 | Method | Path | Auth | Purpose |
@@ -159,6 +215,8 @@ curl -sS http://127.0.0.1:8787/health
 | `GET` | `/v1/events/:id` | Bearer | Event + replay attempts |
 | `POST` | `/v1/events/:id/replay` | Bearer | Deliver payload now, or `{ "enqueue": true }` |
 | `GET` | `/v1/billing` | Bearer | Billing stub |
+
+There is no `POST /v1/keys` (or similar). See [API keys](#api-keys).
 
 Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`.
 
@@ -209,7 +267,7 @@ npx wrangler d1 migrations create requeue <name>
 3. `npm run db:migrate:remote`
 4. `npm run deploy`
 
-Replace the seeded demo API key before exposing the Worker. The seed is for local development only.
+`db:migrate:remote` seeds the demo key. Replace it (D1 `INSERT` of a new hash, then delete `key_demo`) before exposing a private Worker. The hosted API at `api.getrequeue.com` still uses that seed as a public demo.
 
 ## Billing
 
