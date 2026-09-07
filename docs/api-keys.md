@@ -1,6 +1,6 @@
 # API keys
 
-Management routes (`POST /v1/endpoints`, `GET /v1/events`, replay, billing, API key admin) require:
+Management routes (`POST /v1/endpoints`, `GET /v1/endpoints`, `GET /v1/events`, replay, billing, API key admin) require:
 
 ```
 Authorization: Bearer <api_key>

@@ -45,6 +45,8 @@ export function publicEvent(row: EventRow) {
     source: row.source,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    retry_count: row.retry_count ?? 0,
+    next_retry_at: row.next_retry_at ?? null,
   };
 }
 

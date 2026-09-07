@@ -78,7 +78,7 @@ flowchart LR
 **Ingest** is authenticated by the endpoint key in the URL (a capability token).  
 **Management** (create endpoints, list events, replay) requires `Authorization: Bearer <api_key>`.
 
-Replay is synchronous by default: Requeue POSTs the stored payload to `target_url` and writes a `replay_attempts` row. Pass `{"enqueue": true}` to mark the event `pending_replay`; a once-a-minute cron drains that D1 outbox. Cloudflare Queues are not used.
+Replay is synchronous by default: Requeue POSTs the stored payload to `target_url` and writes a `replay_attempts` row. Pass `{"enqueue": true}` to mark the event `pending_replay`; a once-a-minute cron drains that D1 outbox. Failed outbox deliveries retry with exponential backoff (still D1-backed). Cloudflare Queues are not used. See [docs/retries.md](docs/retries.md).
 
 ## API keys
 
@@ -199,7 +199,9 @@ Replay POSTs the **original stored payload** (not the ingest envelope) to `targe
 | `GET` | `/v1/api-keys` | Bearer | List keys for the current project |
 | `DELETE` | `/v1/api-keys/:id` | Bearer | Revoke a key |
 | `POST` | `/v1/endpoints` | Bearer | Create an endpoint (`target_url`, optional `secret`) |
-| `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event |
+| `GET` | `/v1/endpoints` | Bearer | List project endpoints (no raw `secret`; `has_secret` only) |
+| `GET` | `/v1/endpoints/:id` | Bearer | Fetch one project endpoint |
+| `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60 ingest/min/endpoint; `429` when exceeded) |
 | `GET` | `/v1/events` | Bearer | List events; `?status=` + `?limit=` |
 | `GET` | `/v1/events/:id` | Bearer | Event + replay attempts |
 | `POST` | `/v1/events/:id/replay` | Bearer | Deliver payload now, or `{ "enqueue": true }` |
@@ -208,6 +210,12 @@ Replay POSTs the **original stored payload** (not the ingest envelope) to `targe
 See [API keys](#api-keys).
 
 Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`.
+
+`GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key` and `has_secret`, never the HMAC `secret`.
+
+`POST /v1/ingest/:endpointKey` is limited to **60 requests per minute per endpoint** (fixed 60s D1 window). Override with Worker binding `INGEST_RATE_LIMIT`. Over-limit requests return `429` with `error.code: "rate_limited"` and `Retry-After`.
+
+Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Details: [docs/retries.md](docs/retries.md).
 
 ### Ingest body
 
@@ -226,7 +234,7 @@ If `payload` is omitted, the raw request body is stored as the failure payload. 
 
 ## Schema
 
-Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Hosted also applies [`migrations/0002_revoke_public_demo_key.sql`](migrations/0002_revoke_public_demo_key.sql). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
+Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`) plus ingest rate-limit windows and replay backoff columns (`0003`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
 
 | Table | Role |
 | --- | --- |
@@ -235,6 +243,7 @@ Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Hosted a
 | `events` | Failed payloads (the inbox) |
 | `replay_attempts` | Delivery audit / outbox history |
 | `api_keys` | SHA-256 hashed management keys |
+| `ingest_rate_windows` | Per-endpoint ingest counters (60s buckets) |
 
 Apply locally or remotely:
 
@@ -271,7 +280,7 @@ npm test
 npm run typecheck
 ```
 
-Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path plus local demo-key and bootstrap minting.
+Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, endpoint listing, ingest rate limits, outbox retry/backoff, plus local demo-key and bootstrap minting.
 
 ## License
 
