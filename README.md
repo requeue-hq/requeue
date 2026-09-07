@@ -280,6 +280,8 @@ npm test
 npm run typecheck
 ```
 
+Pull requests and pushes to `main` run the same commands on GitHub Actions. Pushes to `main` also deploy after CI passes when Cloudflare secrets are set — see [CI.md](CI.md).
+
 Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, endpoint listing, ingest rate limits, outbox retry/backoff, plus local demo-key and bootstrap minting.
 
 ## License
