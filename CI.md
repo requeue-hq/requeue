@@ -1,6 +1,6 @@
 # CI / CD
 
-GitHub Actions (`.github/workflows/ci.yml`) uses the free tier only: `ubuntu-latest`, Node 20, no paid Actions features.
+GitHub Actions (`.github/workflows/ci.yml`) uses the free tier only: `ubuntu-latest`, Node 22, no paid Actions features.
 
 ## CI
 
