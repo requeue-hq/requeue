@@ -2,14 +2,128 @@
 
 **Catch failed webhooks & jobs. Replay them.**
 
-Requeue is an open-core dead-letter inbox for webhooks, cron jobs, and background workers. When something fails, send Requeue the payload and the reason. Inspect it later, then one-click replay the original request to the configured target.
+Stripe, Clerk, and your own workers retry a few times, then go quiet. The event that 500'd is gone by the time a customer mentions their invoice never updated. A nightly job times out; the next run overwrites the log. Queue libraries retry, then drop the payload.
 
-This repository is the **MIT core API** (Cloudflare Workers + D1). A hosted Worker is live; the marketing site and dashboard live in [requeue-web](https://github.com/requeue-hq/requeue-web).
+Requeue is a dead-letter inbox for webhooks, crons, and background workers. When something fails, send the payload and the reason. Inspect it later. One-click replay the original request to the configured target.
+
+This repository is the **MIT core API** (Cloudflare Workers + D1). Marketing, waitlist, and the dashboard live at [getrequeue.com](https://getrequeue.com) — not in this repo.
 
 - **Product:** [getrequeue.com](https://getrequeue.com)
+- **Dashboard:** [getrequeue.com/app](https://getrequeue.com/app)
 - **Hosted API:** [api.getrequeue.com](https://api.getrequeue.com)
 - **JS SDK:** [requeue-sdk-js](https://github.com/requeue-hq/requeue-sdk-js)
-- **Org:** [github.com/requeue-hq](https://github.com/requeue-hq)
+
+## Try hosted
+
+The Worker is live. Health (no auth):
+
+```bash
+curl -sS https://api.getrequeue.com/health
+# {"ok":true,"service":"requeue","version":"0.1.0"}
+```
+
+Open the inbox at [getrequeue.com/app](https://getrequeue.com/app). Paste `https://api.getrequeue.com` as the API base URL and **your** API key.
+
+Hosted keys are not public. Join the [waitlist](https://getrequeue.com) or email [maya.chen.yvr@agentmail.to](mailto:maya.chen.yvr@agentmail.to) and Maya will mint one. Do not send the local demo key to production.
+
+## Quickstart
+
+### Local (Wrangler)
+
+Requires Node.js 22+. A Cloudflare account is only needed when you deploy. Local mode uses Wrangler’s D1 emulator.
+
+```bash
+git clone https://github.com/requeue-hq/requeue.git
+cd requeue
+npm install
+npm run db:migrate
+npm run dev
+```
+
+Wrangler listens on `http://127.0.0.1:8787`. Health (no auth):
+
+```bash
+curl -sS http://127.0.0.1:8787/health
+# {"ok":true,"service":"requeue","version":"0.1.0"}
+```
+
+Create an endpoint, ingest a failure, then replay — using the **local-only** seed key (not valid on hosted):
+
+```bash
+curl -sS http://127.0.0.1:8787/v1/endpoints \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Orders worker",
+    "target_url": "https://httpbin.org/post",
+    "secret": "optional-hmac-secret"
+  }'
+
+curl -sS http://127.0.0.1:8787/v1/ingest/epk_REPLACE_ME \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": { "order_id": "ord_123", "amount": 4200 },
+    "reason": "fulfillment timeout",
+    "source": "worker"
+  }'
+
+curl -sS "http://127.0.0.1:8787/v1/events?status=failed" \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+
+curl -sS http://127.0.0.1:8787/v1/events/evt_REPLACE_ME \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+
+curl -sS -X POST http://127.0.0.1:8787/v1/events/evt_REPLACE_ME/replay \
+  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
+```
+
+Note `endpoint.endpoint_key` from the create-endpoint response, then substitute `epk_REPLACE_ME` / `evt_REPLACE_ME`.
+
+The dashboard at [getrequeue.com/app](https://getrequeue.com/app) is client-only. Point it at `http://127.0.0.1:8787` and paste the local seed key to inspect and replay without curl.
+
+### Hosted (`https://api.getrequeue.com`)
+
+Same routes. **Do not** send the local demo key to hosted — it is not a production credential.
+
+If Maya minted you a key ([Try hosted](#try-hosted)), use it as `Authorization: Bearer`:
+
+```bash
+export REQUEUE_KEY=rq_PASTE_YOUR_KEY
+
+curl -sS https://api.getrequeue.com/health
+# {"ok":true,"service":"requeue","version":"0.1.0"}
+
+curl -sS https://api.getrequeue.com/v1/endpoints \
+  -H "Authorization: Bearer $REQUEUE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Orders worker",
+    "target_url": "https://httpbin.org/post",
+    "secret": "optional-hmac-secret"
+  }'
+```
+
+Inspect and replay from [getrequeue.com/app](https://getrequeue.com/app): set API base URL to `https://api.getrequeue.com` and paste **your** key. Or use the [JS SDK](https://github.com/requeue-hq/requeue-sdk-js) with `baseUrl: "https://api.getrequeue.com"`.
+
+Self-hosting your own Worker? Mint the first key with `POST /v1/api-keys` and Worker secret `BOOTSTRAP_SECRET`. See [docs/api-keys.md](docs/api-keys.md) and [docs/hosted.md](docs/hosted.md).
+
+Replay POSTs the **original stored payload** (not the ingest envelope) to `target_url`. If the endpoint has a `secret`, Requeue adds:
+
+- `X-Requeue-Event-Id`
+- `X-Requeue-Timestamp`
+- `X-Requeue-Signature: sha256=<hmac>` over `{timestamp}.{eventId}.{payload}`
+
+### Scripts
+
+| Script | Purpose |
+| --- | --- |
+| `npm run dev` | `wrangler dev` |
+| `npm test` | ingest + replay tests |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm run db:migrate` | apply D1 migrations locally, then the **local-only** seed |
+| `npm run db:seed:local` | re-apply the local-only demo key (never use on remote) |
+| `npm run db:migrate:remote` | apply migrations to remote D1 (no demo seed) |
+| `npm run deploy` | deploy the Worker |
 
 ## Status
 
@@ -19,15 +133,11 @@ The hosted stack is live. Model: **open-core MIT + hosted**.
 | --- | --- | --- |
 | Marketing | [getrequeue.com](https://getrequeue.com) | Waitlist + product |
 | Hosted API | [api.getrequeue.com](https://api.getrequeue.com) | `GET /health` → `{"ok":true,"service":"requeue","version":"0.1.0"}` |
-| Dashboard | [getrequeue.com/app.html](https://getrequeue.com/app.html) | Client-only inbox (`app.html` in requeue-web). Paste API base URL + Bearer key |
+| Dashboard | [getrequeue.com/app](https://getrequeue.com/app) | Client-only inbox. Paste API base URL + Bearer key |
 | JS SDK | [requeue-hq/requeue-sdk-js](https://github.com/requeue-hq/requeue-sdk-js) | `@requeue-hq/sdk` |
 | This repo | [requeue-hq/requeue](https://github.com/requeue-hq/requeue) | Open-source Worker + D1 schema |
 
 More on the live stack and keys: [docs/hosted.md](docs/hosted.md), [docs/api-keys.md](docs/api-keys.md).
-
-## Elevator pitch
-
-Catch failed webhooks and jobs. Replay them.
 
 ## Why this stack
 
@@ -90,105 +200,7 @@ The Worker hashes the Bearer token with SHA-256 and looks it up in `api_keys` ([
 rq_demo_local_dev_only_do_not_use_in_prod
 ```
 
-**Hosted.** Mint a key with `POST /v1/api-keys` and Worker secret `BOOTSTRAP_SECRET` (`X-Requeue-Bootstrap-Secret`). See [docs/api-keys.md](docs/api-keys.md) and the production runbook [docs/ops-maya.md](docs/ops-maya.md). Shared migration `0002_revoke_public_demo_key.sql` deletes the historical public demo hash from hosted D1 if it was ever seeded.
-
-## Quickstart
-
-### Local (Wrangler)
-
-Requires Node.js 20+. A Cloudflare account is only needed when you deploy. Local mode uses Wrangler’s D1 emulator.
-
-```bash
-git clone https://github.com/requeue-hq/requeue.git
-cd requeue
-npm install
-npm run db:migrate
-npm run dev
-```
-
-Wrangler listens on `http://127.0.0.1:8787`. Health (no auth):
-
-```bash
-curl -sS http://127.0.0.1:8787/health
-# {"ok":true,"service":"requeue","version":"0.1.0"}
-```
-
-Create an endpoint, ingest a failure, then replay — using the **local-only** seed key (not valid on hosted):
-
-```bash
-curl -sS http://127.0.0.1:8787/v1/endpoints \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Orders worker",
-    "target_url": "https://httpbin.org/post",
-    "secret": "optional-hmac-secret"
-  }'
-
-curl -sS http://127.0.0.1:8787/v1/ingest/epk_REPLACE_ME \
-  -H "Content-Type: application/json" \
-  -d '{
-    "payload": { "order_id": "ord_123", "amount": 4200 },
-    "reason": "fulfillment timeout",
-    "source": "worker"
-  }'
-
-curl -sS "http://127.0.0.1:8787/v1/events?status=failed" \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
-
-curl -sS http://127.0.0.1:8787/v1/events/evt_REPLACE_ME \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
-
-curl -sS -X POST http://127.0.0.1:8787/v1/events/evt_REPLACE_ME/replay \
-  -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
-```
-
-### Hosted (`https://api.getrequeue.com`)
-
-Same routes. **Do not** send the local demo key to hosted — it is not a production credential. Mint a private key first ([docs/api-keys.md](docs/api-keys.md)):
-
-```bash
-curl -sS https://api.getrequeue.com/health
-# {"ok":true,"service":"requeue","version":"0.1.0"}
-
-curl -sS https://api.getrequeue.com/v1/api-keys \
-  -H "Content-Type: application/json" \
-  -H "X-Requeue-Bootstrap-Secret: $BOOTSTRAP_SECRET" \
-  -d '{"name":"Production key","project_name":"Production"}'
-
-export REQUEUE_KEY=rq_PASTE_TOKEN_FROM_RESPONSE
-
-curl -sS https://api.getrequeue.com/v1/endpoints \
-  -H "Authorization: Bearer $REQUEUE_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Orders worker",
-    "target_url": "https://httpbin.org/post",
-    "secret": "optional-hmac-secret"
-  }'
-```
-
-Inspect and replay from the dashboard: open [getrequeue.com/app.html](https://getrequeue.com/app.html), set API base URL to `https://api.getrequeue.com`, and paste **your** minted key. Or use the [JS SDK](https://github.com/requeue-hq/requeue-sdk-js) with `baseUrl: "https://api.getrequeue.com"`.
-
-Note `endpoint.endpoint_key` from the create-endpoint response, then substitute `epk_REPLACE_ME` / `evt_REPLACE_ME`.
-
-Replay POSTs the **original stored payload** (not the ingest envelope) to `target_url`. If the endpoint has a `secret`, Requeue adds:
-
-- `X-Requeue-Event-Id`
-- `X-Requeue-Timestamp`
-- `X-Requeue-Signature: sha256=<hmac>` over `{timestamp}.{eventId}.{payload}`
-
-### Scripts
-
-| Script | Purpose |
-| --- | --- |
-| `npm run dev` | `wrangler dev` |
-| `npm test` | ingest + replay tests |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm run db:migrate` | apply D1 migrations locally, then the **local-only** seed |
-| `npm run db:seed:local` | re-apply the local-only demo key (never use on remote) |
-| `npm run db:migrate:remote` | apply migrations to remote D1 (no demo seed) |
-| `npm run deploy` | deploy the Worker |
+**Hosted.** There is no public demo tenant. Ask Maya for a key ([Try hosted](#try-hosted)), or if you deploy your own Worker, mint one with `POST /v1/api-keys` and Worker secret `BOOTSTRAP_SECRET` (`X-Requeue-Bootstrap-Secret`). See [docs/api-keys.md](docs/api-keys.md) and the production runbook [docs/ops-maya.md](docs/ops-maya.md). Shared migration `0002_revoke_public_demo_key.sql` deletes the historical public demo hash from hosted D1 if it was ever seeded.
 
 ## HTTP API
 

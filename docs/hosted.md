@@ -6,9 +6,8 @@ Requeue is **open-core MIT + hosted**. This repo is the Worker. The live product
 | --- | --- |
 | Marketing | https://getrequeue.com |
 | Hosted API | https://api.getrequeue.com |
-| Dashboard | https://getrequeue.com/app.html |
+| Dashboard | https://getrequeue.com/app |
 | JS SDK | https://github.com/requeue-hq/requeue-sdk-js |
-| Org | https://github.com/requeue-hq |
 
 `GET https://api.getrequeue.com/health` returns:
 
@@ -16,7 +15,9 @@ Requeue is **open-core MIT + hosted**. This repo is the Worker. The live product
 {"ok":true,"service":"requeue","version":"0.1.0"}
 ```
 
-The dashboard is the `app.html` inbox in [requeue-web](https://github.com/requeue-hq/requeue-web). It is client-only: paste an API base URL and Bearer key (stored in `localStorage`). It does not mint keys or proxy the Worker.
+The dashboard at [getrequeue.com/app](https://getrequeue.com/app) is client-only: paste an API base URL and Bearer key (stored in `localStorage`). It does not mint keys or proxy the Worker. Point it at the hosted API or at a local `wrangler dev` Worker.
+
+Hosted production has no public demo tenant. Join the [waitlist](https://getrequeue.com) or email [maya.chen.yvr@agentmail.to](mailto:maya.chen.yvr@agentmail.to) for a key. Operators who deploy their own Worker mint keys with `BOOTSTRAP_SECRET` — see [api-keys.md](api-keys.md).
 
 ## Hosted vs local
 
@@ -24,14 +25,14 @@ The dashboard is the `app.html` inbox in [requeue-web](https://github.com/requeu
 | --- | --- | --- |
 | Base URL | `http://127.0.0.1:8787` (`npm run dev`) | `https://api.getrequeue.com` |
 | Schema | `npm run db:migrate` (migrations + **local-only** seed) | `npm run db:migrate:remote` (schema + demo-key revoke; **no** public seed) |
-| Management key | local seed only — see [api-keys.md](api-keys.md) | mint via `POST /v1/api-keys` + `BOOTSTRAP_SECRET` |
-| Inbox UI | serve requeue-web locally (`app.html`) | https://getrequeue.com/app.html |
+| Management key | local seed only — see [api-keys.md](api-keys.md) | key from Maya, or mint via `POST /v1/api-keys` + `BOOTSTRAP_SECRET` on your own Worker |
+| Inbox UI | [getrequeue.com/app](https://getrequeue.com/app) pointed at localhost | [getrequeue.com/app](https://getrequeue.com/app) |
 
 Same Hono routes and auth. The local demo key is **not** a hosted credential.
 
 ## Hosted curl
 
-Mint a key first ([api-keys.md](api-keys.md), [ops-maya.md](ops-maya.md)), then:
+Use a key Maya minted, or one you minted on your own Worker ([api-keys.md](api-keys.md), [ops-maya.md](ops-maya.md)):
 
 ```bash
 export REQUEUE_API=https://api.getrequeue.com

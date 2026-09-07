@@ -27,9 +27,11 @@ This seed is **LOCAL ONLY**. It is applied by `npm run db:migrate` (local Wrangl
 Hash stored in local D1: `ea489957fc62094c0071d21898c261e18b9c04daedb39bc2f8392137fd6a6ccb`  
 Prefix stored: `rq_demo_`
 
-## Hosted: mint a key with `BOOTSTRAP_SECRET`
+## Hosted: get a key, or mint one with `BOOTSTRAP_SECRET`
 
-Hosted production has no public demo tenant. Create the first management key with `POST /v1/api-keys` and the Worker secret `BOOTSTRAP_SECRET`.
+Hosted production has no public demo tenant. If you want a key on `https://api.getrequeue.com`, join the [waitlist](https://getrequeue.com) or email [maya.chen.yvr@agentmail.to](mailto:maya.chen.yvr@agentmail.to). Then paste that key at [getrequeue.com/app](https://getrequeue.com/app).
+
+If you deploy your own Worker, create the first management key with `POST /v1/api-keys` and the Worker secret `BOOTSTRAP_SECRET`.
 
 1. Set the secret (once, not in git):
 
