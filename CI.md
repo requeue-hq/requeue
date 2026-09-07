@@ -20,7 +20,7 @@ On push to `main` only, after CI passes:
    Same as `npm run db:migrate:remote` (schema + demo-key revoke). Wrangler applies each file once. Does **not** run `scripts/seed-local.sql`.
 2. `npx wrangler deploy` → Worker at [api.getrequeue.com](https://api.getrequeue.com)
 
-The deploy job is **skipped** (the workflow still succeeds) unless both secrets below are set. It does not run on pull requests.
+The deploy job is **skipped** (the workflow still succeeds) unless both secrets below are set. It does not run on pull requests. A small `deploy-gate` job on `main` checks that the secrets exist without printing them (GitHub does not allow `secrets` in a job-level `if`).
 
 `BOOTSTRAP_SECRET` stays in Cloudflare (`npx wrangler secret put BOOTSTRAP_SECRET`). Do not put it, or any `rq_…` API key, in GitHub Actions.
 
