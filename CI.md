@@ -16,8 +16,8 @@ The job **fails** if typecheck or tests fail. Tests use Miniflare / local D1; th
 
 On push to `main` only, after CI passes:
 
-1. `npx wrangler d1 migrations apply requeue --remote --yes`  
-   Same as `npm run db:migrate:remote` (schema + demo-key revoke). Wrangler applies each file once. Does **not** run `scripts/seed-local.sql`.
+1. `npx wrangler d1 migrations apply requeue --remote`  
+   Same as `npm run db:migrate:remote` (schema + demo-key revoke). Wrangler applies each file once. Confirmation is skipped in CI (wrangler 4.x has no `--yes`). Does **not** run `scripts/seed-local.sql`.
 2. `npx wrangler deploy` → Worker at [api.getrequeue.com](https://api.getrequeue.com)
 
 The deploy job is **skipped** (the workflow still succeeds) unless both secrets below are set. It does not run on pull requests. A small `deploy-gate` job on `main` checks that the secrets exist without printing them (GitHub does not allow `secrets` in a job-level `if`).
