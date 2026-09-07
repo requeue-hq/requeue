@@ -90,6 +90,14 @@ export async function findEndpointForProject(
     .first<EndpointRow>();
 }
 
+export async function listEndpointsForProject(db: D1Database, projectId: string): Promise<EndpointRow[]> {
+  const result = await db
+    .prepare("SELECT * FROM endpoints WHERE project_id = ? ORDER BY created_at DESC")
+    .bind(projectId)
+    .all<EndpointRow>();
+  return result.results ?? [];
+}
+
 export async function insertEvent(db: D1Database, row: EventRow): Promise<void> {
   await db
     .prepare(
@@ -189,21 +197,69 @@ export async function updateEventStatus(
   status: EventStatus,
   updatedAt: string,
 ): Promise<void> {
+  if (status === "replayed") {
+    await db
+      .prepare("UPDATE events SET status = ?, updated_at = ?, next_retry_at = NULL WHERE id = ?")
+      .bind(status, updatedAt, eventId)
+      .run();
+    return;
+  }
+
   await db
     .prepare("UPDATE events SET status = ?, updated_at = ? WHERE id = ?")
     .bind(status, updatedAt, eventId)
     .run();
 }
 
-export async function listPendingReplayEvents(db: D1Database, limit: number): Promise<EventRow[]> {
+export async function markEventPendingReplay(
+  db: D1Database,
+  eventId: string,
+  updatedAt: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE events
+       SET status = 'pending_replay', updated_at = ?, retry_count = 0, next_retry_at = ?
+       WHERE id = ?`,
+    )
+    .bind(updatedAt, updatedAt, eventId)
+    .run();
+}
+
+export async function updateEventReplaySchedule(
+  db: D1Database,
+  eventId: string,
+  fields: {
+    status: EventStatus;
+    updatedAt: string;
+    retryCount: number;
+    nextRetryAt: string | null;
+  },
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE events
+       SET status = ?, updated_at = ?, retry_count = ?, next_retry_at = ?
+       WHERE id = ?`,
+    )
+    .bind(fields.status, fields.updatedAt, fields.retryCount, fields.nextRetryAt, eventId)
+    .run();
+}
+
+export async function listPendingReplayEvents(
+  db: D1Database,
+  limit: number,
+  now: string,
+): Promise<EventRow[]> {
   const result = await db
     .prepare(
       `SELECT * FROM events
        WHERE status = 'pending_replay'
-       ORDER BY updated_at ASC
+         AND (next_retry_at IS NULL OR next_retry_at <= ?)
+       ORDER BY COALESCE(next_retry_at, updated_at) ASC
        LIMIT ?`,
     )
-    .bind(limit)
+    .bind(now, limit)
     .all<EventRow>();
   return result.results ?? [];
 }

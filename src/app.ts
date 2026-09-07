@@ -6,19 +6,22 @@ import {
   deleteApiKey,
   findApiKeyForProject,
   findEndpointByKey,
+  findEndpointForProject,
   findEventForProject,
   insertApiKey,
   insertEndpoint,
   insertEvent,
   insertProject,
   listApiKeysForProject,
+  listEndpointsForProject,
   listEventsForProject,
   listReplayAttempts,
-  updateEventStatus,
+  markEventPendingReplay,
 } from "./db";
 import { ApiError, jsonError } from "./errors";
 import { asRecord, nowIso } from "./json";
 import { processPendingReplays } from "./outbox";
+import { consumeIngestRateLimit, parseIngestRateLimit } from "./ratelimit";
 import { replayEventForProject } from "./replay";
 import { publicApiKey, publicAttempt, publicEndpoint, publicEvent, publicProject } from "./serialize";
 import type { ApiKeyRow, AppEnv, EventStatus, ProjectRow } from "./types";
@@ -157,10 +160,39 @@ app.post("/v1/endpoints", requireApiKey, async (c) => {
   return c.json({ endpoint: publicEndpoint(row) }, 201);
 });
 
+app.get("/v1/endpoints", requireApiKey, async (c) => {
+  const endpoints = await listEndpointsForProject(c.env.DB, c.get("projectId"));
+  return c.json({
+    endpoints: endpoints.map(publicEndpoint),
+    count: endpoints.length,
+  });
+});
+
+app.get("/v1/endpoints/:id", requireApiKey, async (c) => {
+  const endpoint = await findEndpointForProject(c.env.DB, c.req.param("id"), c.get("projectId"));
+  if (!endpoint) {
+    return jsonError(c, 404, "not_found", "Endpoint not found");
+  }
+  return c.json({ endpoint: publicEndpoint(endpoint) });
+});
+
 app.post("/v1/ingest/:endpointKey", async (c) => {
   const endpoint = await findEndpointByKey(c.env.DB, c.req.param("endpointKey"));
   if (!endpoint) {
     return jsonError(c, 404, "unknown_endpoint", "Unknown endpoint key");
+  }
+
+  const limit = parseIngestRateLimit(c.env.INGEST_RATE_LIMIT);
+  const rate = await consumeIngestRateLimit(c.env.DB, endpoint.id, limit);
+  if (!rate.allowed) {
+    const retryAfter = String(rate.retryAfterSeconds);
+    c.header("Retry-After", retryAfter);
+    return jsonError(
+      c,
+      429,
+      "rate_limited",
+      `Ingest rate limit exceeded (${rate.limit} per minute per endpoint). Retry after ${retryAfter}s.`,
+    );
   }
 
   const raw = await c.req.text();
@@ -187,6 +219,8 @@ app.post("/v1/ingest/:endpointKey", async (c) => {
     source: ingested.source,
     created_at: createdAt,
     updated_at: createdAt,
+    retry_count: 0,
+    next_retry_at: null,
   };
 
   await insertEvent(c.env.DB, event);
@@ -235,9 +269,15 @@ app.post("/v1/events/:id/replay", requireApiKey, async (c) => {
   const body = await readOptionalJsonObject(c.req);
   if (body?.enqueue === true) {
     const updatedAt = nowIso();
-    await updateEventStatus(c.env.DB, event.id, "pending_replay", updatedAt);
+    await markEventPendingReplay(c.env.DB, event.id, updatedAt);
     return c.json({
-      event: publicEvent({ ...event, status: "pending_replay", updated_at: updatedAt }),
+      event: publicEvent({
+        ...event,
+        status: "pending_replay",
+        updated_at: updatedAt,
+        retry_count: 0,
+        next_retry_at: updatedAt,
+      }),
       queued: true,
     });
   }

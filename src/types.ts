@@ -37,6 +37,8 @@ export type EventRow = {
   source: string | null;
   created_at: string;
   updated_at: string;
+  retry_count: number;
+  next_retry_at: string | null;
 };
 
 export type ReplayAttemptRow = {
