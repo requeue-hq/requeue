@@ -17,7 +17,7 @@ Requeue is **open-core MIT + hosted**. This repo is the Worker. The live product
 
 The dashboard at [getrequeue.com/app](https://getrequeue.com/app) is client-only: paste an API base URL and Bearer key (stored in `localStorage`). It does not mint keys or proxy the Worker. Point it at the hosted API or at a local `wrangler dev` Worker.
 
-Hosted production has no public demo tenant. Join the [waitlist](https://getrequeue.com) or email [maya@getrequeue.com](mailto:maya@getrequeue.com) for a key. Operators who deploy their own Worker mint keys with `BOOTSTRAP_SECRET` — see [api-keys.md](api-keys.md).
+Hosted production has no public demo tenant. Join the [waitlist](https://getrequeue.com) or email [maya@getrequeue.com](mailto:maya@getrequeue.com) for a key. Five-minute path: [quickstart.md](quickstart.md). Operators who deploy their own Worker mint keys with `BOOTSTRAP_SECRET` — see [api-keys.md](api-keys.md).
 
 ## Hosted vs local
 
