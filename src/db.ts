@@ -125,24 +125,28 @@ export async function listEventsForProject(
   projectId: string,
   status: EventStatus | undefined,
   limit: number,
+  endpointId?: string,
 ): Promise<EventRow[]> {
-  const query = status
-    ? `SELECT e.* FROM events e
+  const conditions = ["ep.project_id = ?"];
+  const binds: Array<string | number> = [projectId];
+
+  if (status) {
+    conditions.push("e.status = ?");
+    binds.push(status);
+  }
+  if (endpointId) {
+    conditions.push("e.endpoint_id = ?");
+    binds.push(endpointId);
+  }
+
+  const query = `SELECT e.* FROM events e
        INNER JOIN endpoints ep ON ep.id = e.endpoint_id
-       WHERE ep.project_id = ? AND e.status = ?
-       ORDER BY e.created_at DESC
-       LIMIT ?`
-    : `SELECT e.* FROM events e
-       INNER JOIN endpoints ep ON ep.id = e.endpoint_id
-       WHERE ep.project_id = ?
+       WHERE ${conditions.join(" AND ")}
        ORDER BY e.created_at DESC
        LIMIT ?`;
+  binds.push(limit);
 
-  const stmt = status
-    ? db.prepare(query).bind(projectId, status, limit)
-    : db.prepare(query).bind(projectId, limit);
-
-  const result = await stmt.all<EventRow>();
+  const result = await db.prepare(query).bind(...binds).all<EventRow>();
   return result.results ?? [];
 }
 
