@@ -33,6 +33,8 @@ const EVENT_STATUSES = new Set<EventStatus>([
   "replay_failed",
 ]);
 
+const ENDPOINT_ID_RE = /^ep_[0-9a-f]+$/;
+
 const MAX_PAYLOAD_BYTES = 512 * 1024;
 
 export const app = new Hono<AppEnv>();
@@ -233,12 +235,18 @@ app.get("/v1/events", requireApiKey, async (c) => {
     return jsonError(c, 400, "invalid_status", "Unknown event status");
   }
 
+  const endpointIdParam = c.req.query("endpoint_id");
+  if (endpointIdParam !== undefined && !ENDPOINT_ID_RE.test(endpointIdParam)) {
+    return jsonError(c, 400, "invalid_endpoint_id", "endpoint_id must be an endpoint id");
+  }
+
   const limit = clampInt(c.req.query("limit"), 50, 1, 200);
   const events = await listEventsForProject(
     c.env.DB,
     c.get("projectId"),
     statusParam as EventStatus | undefined,
     limit,
+    endpointIdParam,
   );
 
   return c.json({

@@ -67,7 +67,7 @@ curl -sS http://127.0.0.1:8787/v1/ingest/epk_REPLACE_ME \
     "source": "worker"
   }'
 
-curl -sS "http://127.0.0.1:8787/v1/events?status=failed" \
+curl -sS "http://127.0.0.1:8787/v1/events?status=failed&endpoint_id=ep_REPLACE_ME" \
   -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
 
 curl -sS http://127.0.0.1:8787/v1/events/evt_REPLACE_ME \
@@ -77,7 +77,7 @@ curl -sS -X POST http://127.0.0.1:8787/v1/events/evt_REPLACE_ME/replay \
   -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
 ```
 
-Note `endpoint.endpoint_key` from the create-endpoint response, then substitute `epk_REPLACE_ME` / `evt_REPLACE_ME`.
+Note `endpoint.id` and `endpoint.endpoint_key` from the create-endpoint response, then substitute `ep_REPLACE_ME` / `epk_REPLACE_ME` / `evt_REPLACE_ME`.
 
 The dashboard at [getrequeue.com/app](https://getrequeue.com/app) is client-only. Point it at `http://127.0.0.1:8787` and paste the local seed key to inspect and replay without curl.
 
@@ -214,14 +214,14 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | `GET` | `/v1/endpoints` | Bearer | List project endpoints (no raw `secret`; `has_secret` only) |
 | `GET` | `/v1/endpoints/:id` | Bearer | Fetch one project endpoint |
 | `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60 ingest/min/endpoint; `429` when exceeded) |
-| `GET` | `/v1/events` | Bearer | List events; `?status=` + `?limit=` |
+| `GET` | `/v1/events` | Bearer | List events; `?status=` + `?endpoint_id=` + `?limit=` |
 | `GET` | `/v1/events/:id` | Bearer | Event + replay attempts |
 | `POST` | `/v1/events/:id/replay` | Bearer | Deliver payload now, or `{ "enqueue": true }` |
 | `GET` | `/v1/billing` | Bearer | Billing stub |
 
 See [API keys](#api-keys).
 
-Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`.
+Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint.
 
 `GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key` and `has_secret`, never the HMAC `secret`.
 
