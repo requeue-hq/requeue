@@ -20,7 +20,7 @@ permissions:
 jobs:
   ci:
     name: Typecheck and test
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -30,9 +30,23 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Restore npm cache (Latchkey)
+        uses: latchkey-dev/cache-action@v1
+        id: latchkey-cache-npm
+        with:
+          action: restore
+          key: npm-${{ hashFiles('**/package-lock.json') }}
+          path: ~/.npm
       - name: Install
         run: npm ci
 
+      - name: Save npm cache (Latchkey)
+        uses: latchkey-dev/cache-action@v1
+        if: steps.latchkey-cache-npm.outputs.cache-hit != 'true'
+        with:
+          action: save
+          key: npm-${{ hashFiles('**/package-lock.json') }}
+          path: ~/.npm
       - name: Typecheck
         run: npm run typecheck
 
@@ -44,7 +58,7 @@ jobs:
     name: Check deploy secrets
     needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     timeout-minutes: 2
     outputs:
       ready: ${{ steps.check.outputs.ready }}
@@ -70,7 +84,7 @@ jobs:
     name: Apply remote D1 migrations
     needs: deploy-gate
     if: needs.deploy-gate.outputs.ready == 'true'
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     timeout-minutes: 10
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -101,7 +115,7 @@ jobs:
       !cancelled() &&
       needs.deploy-gate.result == 'success' &&
       needs.deploy-gate.outputs.ready == 'true'
-    runs-on: ubuntu-latest
+    runs-on: latchkey-small
     timeout-minutes: 10
     concurrency:
       group: deploy-main
