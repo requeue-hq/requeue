@@ -29,7 +29,7 @@ Prefix stored: `rq_demo_`
 
 ## Hosted: get a key, or mint one with `BOOTSTRAP_SECRET`
 
-Hosted production has no public demo tenant. If you want a key on `https://api.getrequeue.com`, join the [waitlist](https://getrequeue.com) or email [maya.chen.yvr@agentmail.to](mailto:maya.chen.yvr@agentmail.to). Then paste that key at [getrequeue.com/app](https://getrequeue.com/app).
+Hosted production has no public demo tenant. If you want a key on `https://api.getrequeue.com`, join the [waitlist](https://getrequeue.com) or email [maya@getrequeue.com](mailto:maya@getrequeue.com). Then paste that key at [getrequeue.com/app](https://getrequeue.com/app).
 
 If you deploy your own Worker, create the first management key with `POST /v1/api-keys` and the Worker secret `BOOTSTRAP_SECRET`.
 
