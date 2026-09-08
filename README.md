@@ -24,7 +24,7 @@ curl -sS https://api.getrequeue.com/health
 
 Open the inbox at [getrequeue.com/app](https://getrequeue.com/app). Paste `https://api.getrequeue.com` as the API base URL and **your** API key.
 
-Hosted keys are not public. Join the [waitlist](https://getrequeue.com) or email [maya.chen.yvr@agentmail.to](mailto:maya.chen.yvr@agentmail.to) and Maya will mint one. Do not send the local demo key to production.
+Hosted keys are not public. Join the [waitlist](https://getrequeue.com) or email [maya@getrequeue.com](mailto:maya@getrequeue.com) and Maya will mint one. Do not send the local demo key to production.
 
 ## Quickstart
 
