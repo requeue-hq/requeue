@@ -17,11 +17,17 @@ import {
   listEventsForProject,
   listReplayAttempts,
   markEventPendingReplay,
+  upsertWaitlistSignup,
 } from "./db";
 import { ApiError, jsonError } from "./errors";
 import { asRecord, nowIso } from "./json";
 import { processPendingReplays } from "./outbox";
-import { consumeIngestRateLimit, parseIngestRateLimit } from "./ratelimit";
+import {
+  consumeIngestRateLimit,
+  consumeWaitlistRateLimit,
+  parseIngestRateLimit,
+  parseWaitlistRateLimit,
+} from "./ratelimit";
 import { replayEventForProject } from "./replay";
 import { publicApiKey, publicAttempt, publicEndpoint, publicEvent, publicProject } from "./serialize";
 import type { ApiKeyRow, AppEnv, EventStatus, ProjectRow } from "./types";
@@ -37,9 +43,21 @@ const ENDPOINT_ID_RE = /^ep_[0-9a-f]+$/;
 
 const MAX_PAYLOAD_BYTES = 512 * 1024;
 
+const MAX_WAITLIST_FIELD_CHARS = 128;
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Marketing site origins that POST /v1/waitlist (and the dashboard) from the browser. */
+export const MARKETING_ORIGINS = ["https://getrequeue.com", "https://www.getrequeue.com"] as const;
+
 export const app = new Hono<AppEnv>();
 
-app.use("*", cors());
+app.use(
+  "*",
+  cors({
+    origin: (origin) => allowCorsOrigin(origin),
+  }),
+);
 
 app.onError((err, c) => {
   if (err instanceof ApiError) {
@@ -58,6 +76,61 @@ app.get("/health", async (c) => {
     service: "requeue",
     version: "0.1.0",
   });
+});
+
+app.post("/v1/waitlist", async (c) => {
+  const limit = parseWaitlistRateLimit(c.env.WAITLIST_RATE_LIMIT);
+  const rate = await consumeWaitlistRateLimit(c.env.DB, waitlistClientKey(c), limit);
+  if (!rate.allowed) {
+    const retryAfter = String(rate.retryAfterSeconds);
+    c.header("Retry-After", retryAfter);
+    return jsonError(
+      c,
+      429,
+      "rate_limited",
+      `Waitlist rate limit exceeded (${rate.limit} per minute). Retry after ${retryAfter}s.`,
+    );
+  }
+
+  const parsed = await readJsonBody(c);
+  const body = asRecord(parsed);
+  if (!body) {
+    return jsonError(c, 400, "invalid_body", "JSON object body required");
+  }
+
+  const email = normalizeEmail(body.email);
+  if (!email) {
+    return jsonError(c, 400, "invalid_email", "email is required");
+  }
+  if (!isValidEmail(email)) {
+    return jsonError(c, 400, "invalid_email", "email must be a valid email address");
+  }
+
+  const product = optionalWaitlistField(body.product);
+  const source = optionalWaitlistField(body.source);
+  if (product === false || source === false) {
+    return jsonError(c, 400, "invalid_body", "product and source must be short strings when provided");
+  }
+
+  const createdAt = nowIso();
+  await upsertWaitlistSignup(c.env.DB, {
+    id: newId("wl"),
+    email,
+    product,
+    source,
+    created_at: createdAt,
+  });
+
+  console.log(
+    JSON.stringify({
+      msg: "waitlist_signup",
+      email,
+      product,
+      source,
+    }),
+  );
+
+  return c.json({ ok: true });
 });
 
 app.post("/v1/api-keys", async (c) => {
@@ -387,6 +460,46 @@ function clampInt(value: string | undefined, fallback: number, min: number, max:
   const parsed = Number.parseInt(value ?? "", 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function allowCorsOrigin(origin: string): string {
+  if ((MARKETING_ORIGINS as readonly string[]).includes(origin)) {
+    return origin;
+  }
+  // Keep existing permissive CORS for self-hosted dashboards and local wrangler.
+  return origin || "*";
+}
+
+function waitlistClientKey(c: { req: { header: (name: string) => string | undefined } }): string {
+  const cfIp = c.req.header("cf-connecting-ip")?.trim();
+  if (cfIp) return `ip:${cfIp}`;
+  const forwarded = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
+  if (forwarded) return `ip:${forwarded}`;
+  return "ip:unknown";
+}
+
+function normalizeEmail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  return trimmed || null;
+}
+
+function isValidEmail(value: string): boolean {
+  if (value.length > 254) return false;
+  if (!EMAIL_RE.test(value)) return false;
+  const at = value.lastIndexOf("@");
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  return local.length > 0 && local.length <= 64 && domain.includes(".");
+}
+
+function optionalWaitlistField(value: unknown): string | null | false {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > MAX_WAITLIST_FIELD_CHARS) return false;
+  return trimmed;
 }
 
 async function mintApiKey(

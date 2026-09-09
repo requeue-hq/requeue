@@ -11,7 +11,7 @@ curl -sS https://api.getrequeue.com/health
 
 ## 2. Request a key
 
-Hosted production has no public demo tenant. Join the [waitlist](https://getrequeue.com) or email [maya@getrequeue.com](mailto:maya@getrequeue.com). Maya will mint a management key.
+Hosted production has no public demo tenant. Join the [waitlist](https://getrequeue.com) (`POST /v1/waitlist`) or email [maya@getrequeue.com](mailto:maya@getrequeue.com). Maya will mint a management key.
 
 Do **not** send the local seed key (`rq_demo_local_dev_only_do_not_use_in_prod`) to hosted — it is not a production credential.
 

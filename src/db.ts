@@ -1,4 +1,12 @@
-import type { ApiKeyRow, EndpointRow, EventRow, EventStatus, ProjectRow, ReplayAttemptRow } from "./types";
+import type {
+  ApiKeyRow,
+  EndpointRow,
+  EventRow,
+  EventStatus,
+  ProjectRow,
+  ReplayAttemptRow,
+  WaitlistRow,
+} from "./types";
 
 export async function findApiKeyByHash(db: D1Database, keyHash: string): Promise<ApiKeyRow | null> {
   return db.prepare("SELECT * FROM api_keys WHERE key_hash = ?").bind(keyHash).first<ApiKeyRow>();
@@ -270,4 +278,17 @@ export async function listPendingReplayEvents(
 
 export async function findEndpointById(db: D1Database, endpointId: string): Promise<EndpointRow | null> {
   return db.prepare("SELECT * FROM endpoints WHERE id = ?").bind(endpointId).first<EndpointRow>();
+}
+
+export async function upsertWaitlistSignup(db: D1Database, row: WaitlistRow): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO waitlist (id, email, product, source, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(email) DO UPDATE SET
+         product = COALESCE(excluded.product, waitlist.product),
+         source = COALESCE(excluded.source, waitlist.source)`,
+    )
+    .bind(row.id, row.email, row.product, row.source, row.created_at)
+    .run();
 }

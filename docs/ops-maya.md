@@ -75,3 +75,14 @@ curl -sS https://api.getrequeue.com/v1/billing \
 ```
 
 Do not apply `scripts/seed-local.sql` to remote D1.
+
+## Waitlist signups
+
+`POST /v1/waitlist` writes to the D1 `waitlist` table (no auth). After `0004_waitlist.sql` is applied remotely:
+
+```bash
+npx wrangler d1 execute requeue --remote --command \
+  "SELECT email, product, source, created_at FROM waitlist ORDER BY created_at DESC LIMIT 50;"
+```
+
+See [waitlist.md](waitlist.md).
