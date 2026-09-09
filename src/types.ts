@@ -59,3 +59,11 @@ export type ApiKeyRow = {
   key_prefix: string;
   created_at: string;
 };
+
+export type WaitlistRow = {
+  id: string;
+  email: string;
+  product: string | null;
+  source: string | null;
+  created_at: string;
+};

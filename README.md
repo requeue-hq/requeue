@@ -24,7 +24,7 @@ curl -sS https://api.getrequeue.com/health
 
 Open the inbox at [getrequeue.com/app](https://getrequeue.com/app). Paste `https://api.getrequeue.com` as the API base URL and **your** API key.
 
-Hosted keys are not public. Join the [waitlist](https://getrequeue.com) or email [maya@getrequeue.com](mailto:maya@getrequeue.com) and Maya will mint one. Do not send the local demo key to production.
+Hosted keys are not public. Join the [waitlist](https://getrequeue.com) (`POST /v1/waitlist`) or email [maya@getrequeue.com](mailto:maya@getrequeue.com) and Maya will mint one. Do not send the local demo key to production.
 
 Five minutes, hosted only: [docs/quickstart.md](docs/quickstart.md).
 
@@ -210,6 +210,7 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | `GET` | `/health` | none | Liveness + D1 ping |
+| `POST` | `/v1/waitlist` | none | Capture a marketing waitlist email (`{email, product?, source?}`) |
 | `POST` | `/v1/api-keys` | bootstrap secret or Bearer | Mint a management key (bootstrap also creates a project) |
 | `GET` | `/v1/api-keys` | Bearer | List keys for the current project |
 | `DELETE` | `/v1/api-keys/:id` | Bearer | Revoke a key |
@@ -227,6 +228,8 @@ See [API keys](#api-keys).
 Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint.
 
 `GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key` and `has_secret`, never the HMAC `secret`.
+
+`POST /v1/waitlist` is unauthenticated. CORS allows `https://getrequeue.com` and `https://www.getrequeue.com` so the marketing site can `fetch` it. Light rate limit: **10 requests per minute per client IP** (`WAITLIST_RATE_LIMIT`). See [docs/waitlist.md](docs/waitlist.md).
 
 `POST /v1/ingest/:endpointKey` is limited to **60 requests per minute per endpoint** (fixed 60s D1 window). Override with Worker binding `INGEST_RATE_LIMIT`. Over-limit requests return `429` with `error.code: "rate_limited"` and `Retry-After`.
 
@@ -249,7 +252,7 @@ If `payload` is omitted, the raw request body is stored as the failure payload. 
 
 ## Schema
 
-Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`) plus ingest rate-limit windows and replay backoff columns (`0003`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
+Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`), ingest rate-limit windows and replay backoff columns (`0003`), and the marketing waitlist (`0004`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
 
 | Table | Role |
 | --- | --- |
@@ -259,6 +262,8 @@ Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later mi
 | `replay_attempts` | Delivery audit / outbox history |
 | `api_keys` | SHA-256 hashed management keys |
 | `ingest_rate_windows` | Per-endpoint ingest counters (60s buckets) |
+| `waitlist` | Marketing waitlist emails (`POST /v1/waitlist`) |
+| `waitlist_rate_windows` | Per-IP waitlist counters (60s buckets) |
 
 Apply locally or remotely:
 
@@ -297,7 +302,7 @@ npm run typecheck
 
 Pull requests and pushes to `main` run the same commands on GitHub Actions. Pushes to `main` also deploy after CI passes when Cloudflare secrets are set — see [CI.md](CI.md).
 
-Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, endpoint listing, ingest rate limits, outbox retry/backoff, plus local demo-key and bootstrap minting.
+Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, endpoint listing, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
 
 ## License
 
