@@ -26,7 +26,7 @@ Open the inbox at [getrequeue.com/app](https://getrequeue.com/app). Paste `https
 
 Hosted keys are not public. Join the [waitlist](https://getrequeue.com) (`POST /v1/waitlist`) or email [maya@getrequeue.com](mailto:maya@getrequeue.com) and Maya will mint one. Do not send the local demo key to production.
 
-Five minutes, hosted only: [docs/quickstart.md](docs/quickstart.md).
+Five minutes, hosted only: [docs/quickstart.md](docs/quickstart.md). FAQ (what this is, vs Hookdeck/Svix, how to get a key): [docs/faq.md](docs/faq.md).
 
 ## Quickstart
 
@@ -137,10 +137,11 @@ The hosted stack is live. Model: **open-core MIT + hosted**.
 | Hosted API | [api.getrequeue.com](https://api.getrequeue.com) | `GET /health` → `{"ok":true,"service":"requeue","version":"0.1.0"}` |
 | Dashboard | [getrequeue.com/app](https://getrequeue.com/app) | Client-only inbox. Paste API base URL + Bearer key |
 | Hosted 5-min path | [docs/quickstart.md](docs/quickstart.md) | Health → waitlist key → ingest → replay |
+| FAQ | [docs/faq.md](docs/faq.md) | What this is / is not, self-host vs hosted, vs Hookdeck/Svix, keys |
 | JS SDK | [requeue-hq/requeue-sdk-js](https://github.com/requeue-hq/requeue-sdk-js) | `@requeue-hq/sdk` |
 | This repo | [requeue-hq/requeue](https://github.com/requeue-hq/requeue) | Open-source Worker + D1 schema |
 
-More on the live stack and keys: [docs/quickstart.md](docs/quickstart.md), [docs/hosted.md](docs/hosted.md), [docs/api-keys.md](docs/api-keys.md).
+More on the live stack and keys: [docs/quickstart.md](docs/quickstart.md), [docs/faq.md](docs/faq.md), [docs/hosted.md](docs/hosted.md), [docs/api-keys.md](docs/api-keys.md).
 
 ## Why this stack
 
