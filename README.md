@@ -218,6 +218,8 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | `POST` | `/v1/endpoints` | Bearer | Create an endpoint (`target_url`, optional `secret`) |
 | `GET` | `/v1/endpoints` | Bearer | List project endpoints (no raw `secret`; `has_secret` only) |
 | `GET` | `/v1/endpoints/:id` | Bearer | Fetch one project endpoint |
+| `PATCH` | `/v1/endpoints/:id` | Bearer | Update `name`, `target_url`, and/or `secret` (ingest path stays put) |
+| `DELETE` | `/v1/endpoints/:id` | Bearer | Soft-delete; ingest returns `410 endpoint_gone` |
 | `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60 ingest/min/endpoint; `429` when exceeded) |
 | `GET` | `/v1/events` | Bearer | List events; `?status=` + `?endpoint_id=` + `?limit=` |
 | `GET` | `/v1/events/:id` | Bearer | Event + replay attempts |
@@ -229,6 +231,8 @@ See [API keys](#api-keys).
 Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint.
 
 `GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key` and `has_secret`, never the HMAC `secret`.
+
+`PATCH /v1/endpoints/:id` is partial. Omitted fields stay as-is. `secret: ""` or `secret: null` clears the HMAC secret (same as create treating an empty value as no secret). `endpoint_key` / `ingest_path` are not rotated. `DELETE` sets `endpoints.deleted_at` so historical events remain (`events.endpoint_id` is `ON DELETE CASCADE`). List/get omit deleted rows; ingest for that key returns `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination are marked `replay_failed`.
 
 `POST /v1/waitlist` is unauthenticated. CORS allows `https://getrequeue.com` and `https://www.getrequeue.com` so the marketing site can `fetch` it. Light rate limit: **10 requests per minute per client IP** (`WAITLIST_RATE_LIMIT`). See [docs/waitlist.md](docs/waitlist.md).
 
@@ -253,12 +257,12 @@ If `payload` is omitted, the raw request body is stored as the failure payload. 
 
 ## Schema
 
-Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`), ingest rate-limit windows and replay backoff columns (`0003`), and the marketing waitlist (`0004`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
+Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`), ingest rate-limit windows and replay backoff columns (`0003`), the marketing waitlist (`0004`), and endpoint soft-delete (`0005`, `endpoints.deleted_at`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
 
 | Table | Role |
 | --- | --- |
 | `projects` | Tenant / workspace |
-| `endpoints` | Replay destination + public ingest key |
+| `endpoints` | Replay destination + public ingest key (`deleted_at` when retired) |
 | `events` | Failed payloads (the inbox) |
 | `replay_attempts` | Delivery audit / outbox history |
 | `api_keys` | SHA-256 hashed management keys |
@@ -303,7 +307,7 @@ npm run typecheck
 
 Pull requests and pushes to `main` run the same commands on GitHub Actions. Pushes to `main` also deploy after CI passes when Cloudflare secrets are set — see [CI.md](CI.md).
 
-Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, endpoint listing, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
+Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, endpoint listing / update / soft-delete, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
 
 ## License
 

@@ -4,6 +4,7 @@ import { bearerToken, requireApiKey, resolveApiKey } from "./auth";
 import { newApiKeyToken, newId, secretsMatch, sha256Hex } from "./crypto";
 import {
   deleteApiKey,
+  failPendingReplaysForEndpoint,
   findApiKeyForProject,
   findEndpointByKey,
   findEndpointForProject,
@@ -17,6 +18,8 @@ import {
   listEventsForProject,
   listReplayAttempts,
   markEventPendingReplay,
+  softDeleteEndpoint,
+  updateEndpoint,
   upsertWaitlistSignup,
 } from "./db";
 import { ApiError, jsonError } from "./errors";
@@ -30,7 +33,7 @@ import {
 } from "./ratelimit";
 import { replayEventForProject } from "./replay";
 import { publicApiKey, publicAttempt, publicEndpoint, publicEvent, publicProject } from "./serialize";
-import type { ApiKeyRow, AppEnv, EventStatus, ProjectRow } from "./types";
+import type { ApiKeyRow, AppEnv, EndpointRow, EventStatus, ProjectRow } from "./types";
 
 const EVENT_STATUSES = new Set<EventStatus>([
   "failed",
@@ -229,6 +232,7 @@ app.post("/v1/endpoints", requireApiKey, async (c) => {
     target_url: targetUrl,
     secret: secret || null,
     created_at: createdAt,
+    deleted_at: null,
   };
 
   await insertEndpoint(c.env.DB, row);
@@ -251,10 +255,50 @@ app.get("/v1/endpoints/:id", requireApiKey, async (c) => {
   return c.json({ endpoint: publicEndpoint(endpoint) });
 });
 
+app.patch("/v1/endpoints/:id", requireApiKey, async (c) => {
+  const endpoint = await findEndpointForProject(c.env.DB, c.req.param("id"), c.get("projectId"));
+  if (!endpoint) {
+    return jsonError(c, 404, "not_found", "Endpoint not found");
+  }
+
+  const body = asRecord(await readJsonBody(c));
+  if (!body) {
+    return jsonError(c, 400, "invalid_body", "JSON object body required");
+  }
+
+  const patched = applyEndpointPatch(endpoint, body);
+  if (!patched.ok) {
+    return jsonError(c, 400, patched.code, patched.message);
+  }
+
+  await updateEndpoint(c.env.DB, endpoint.id, endpoint.project_id, {
+    name: patched.row.name,
+    target_url: patched.row.target_url,
+    secret: patched.row.secret,
+  });
+
+  return c.json({ endpoint: publicEndpoint(patched.row) });
+});
+
+app.delete("/v1/endpoints/:id", requireApiKey, async (c) => {
+  const endpoint = await findEndpointForProject(c.env.DB, c.req.param("id"), c.get("projectId"));
+  if (!endpoint) {
+    return jsonError(c, 404, "not_found", "Endpoint not found");
+  }
+
+  const deletedAt = nowIso();
+  await softDeleteEndpoint(c.env.DB, endpoint.id, endpoint.project_id, deletedAt);
+  await failPendingReplaysForEndpoint(c.env.DB, endpoint.id, deletedAt);
+  return c.json({ deleted: true, id: endpoint.id });
+});
+
 app.post("/v1/ingest/:endpointKey", async (c) => {
   const endpoint = await findEndpointByKey(c.env.DB, c.req.param("endpointKey"));
   if (!endpoint) {
     return jsonError(c, 404, "unknown_endpoint", "Unknown endpoint key");
+  }
+  if (endpoint.deleted_at) {
+    return jsonError(c, 410, "endpoint_gone", "Endpoint has been deleted");
   }
 
   const limit = parseIngestRateLimit(c.env.INGEST_RATE_LIMIT);
@@ -433,6 +477,50 @@ function parseIngestBody(
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+type EndpointPatchResult =
+  | { ok: true; row: EndpointRow }
+  | { ok: false; code: string; message: string };
+
+function applyEndpointPatch(
+  endpoint: EndpointRow,
+  body: Record<string, unknown>,
+): EndpointPatchResult {
+  const next = { ...endpoint };
+
+  if (hasOwn(body, "name")) {
+    const name = asString(body.name);
+    if (!name) {
+      return { ok: false, code: "invalid_name", message: "name must be a non-empty string" };
+    }
+    next.name = name;
+  }
+
+  if (hasOwn(body, "target_url")) {
+    const targetUrl = asString(body.target_url);
+    if (!targetUrl || !isHttpUrl(targetUrl)) {
+      return { ok: false, code: "invalid_target_url", message: "target_url must be an http(s) URL" };
+    }
+    next.target_url = targetUrl;
+  }
+
+  if (hasOwn(body, "secret")) {
+    if (body.secret === null) {
+      next.secret = null;
+    } else if (typeof body.secret === "string") {
+      // Match create: empty / whitespace means no secret.
+      next.secret = body.secret.trim() || null;
+    } else {
+      return { ok: false, code: "invalid_secret", message: "secret must be a string or null" };
+    }
+  }
+
+  return { ok: true, row: next };
 }
 
 function isHttpUrl(value: string): boolean {

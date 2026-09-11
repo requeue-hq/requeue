@@ -24,6 +24,7 @@ export type EndpointRow = {
   target_url: string;
   secret: string | null;
   created_at: string;
+  deleted_at: string | null;
 };
 
 export type EventRow = {

@@ -93,17 +93,66 @@ export async function findEndpointForProject(
   projectId: string,
 ): Promise<EndpointRow | null> {
   return db
-    .prepare("SELECT * FROM endpoints WHERE id = ? AND project_id = ?")
+    .prepare("SELECT * FROM endpoints WHERE id = ? AND project_id = ? AND deleted_at IS NULL")
     .bind(endpointId, projectId)
     .first<EndpointRow>();
 }
 
 export async function listEndpointsForProject(db: D1Database, projectId: string): Promise<EndpointRow[]> {
   const result = await db
-    .prepare("SELECT * FROM endpoints WHERE project_id = ? ORDER BY created_at DESC")
+    .prepare(
+      "SELECT * FROM endpoints WHERE project_id = ? AND deleted_at IS NULL ORDER BY created_at DESC",
+    )
     .bind(projectId)
     .all<EndpointRow>();
   return result.results ?? [];
+}
+
+export async function updateEndpoint(
+  db: D1Database,
+  endpointId: string,
+  projectId: string,
+  fields: { name: string; target_url: string; secret: string | null },
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE endpoints
+       SET name = ?, target_url = ?, secret = ?
+       WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
+    )
+    .bind(fields.name, fields.target_url, fields.secret, endpointId, projectId)
+    .run();
+}
+
+export async function softDeleteEndpoint(
+  db: D1Database,
+  endpointId: string,
+  projectId: string,
+  deletedAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE endpoints SET deleted_at = ?
+       WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
+    )
+    .bind(deletedAt, endpointId, projectId)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function failPendingReplaysForEndpoint(
+  db: D1Database,
+  endpointId: string,
+  updatedAt: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE events
+       SET status = 'replay_failed', updated_at = ?, next_retry_at = NULL
+       WHERE endpoint_id = ? AND status = 'pending_replay'`,
+    )
+    .bind(updatedAt, endpointId)
+    .run();
 }
 
 export async function insertEvent(db: D1Database, row: EventRow): Promise<void> {
@@ -277,7 +326,10 @@ export async function listPendingReplayEvents(
 }
 
 export async function findEndpointById(db: D1Database, endpointId: string): Promise<EndpointRow | null> {
-  return db.prepare("SELECT * FROM endpoints WHERE id = ?").bind(endpointId).first<EndpointRow>();
+  return db
+    .prepare("SELECT * FROM endpoints WHERE id = ? AND deleted_at IS NULL")
+    .bind(endpointId)
+    .first<EndpointRow>();
 }
 
 export async function upsertWaitlistSignup(db: D1Database, row: WaitlistRow): Promise<void> {
