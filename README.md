@@ -238,7 +238,7 @@ Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optiona
 
 `POST /v1/ingest/:endpointKey` is limited to **60 requests per minute per endpoint** (fixed 60s D1 window). Override with Worker binding `INGEST_RATE_LIMIT`. Over-limit requests return `429` with `error.code: "rate_limited"` and `Retry-After`.
 
-Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Details: [docs/retries.md](docs/retries.md).
+Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Details: [docs/retries.md](docs/retries.md). Hosted curls for filters, queued replay, and PATCH/DELETE: [docs/quickstart.md](docs/quickstart.md).
 
 ### Ingest body
 
