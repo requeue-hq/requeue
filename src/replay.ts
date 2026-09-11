@@ -5,6 +5,7 @@ import {
   insertReplayAttempt,
   updateEventStatus,
 } from "./db";
+import { ApiError } from "./errors";
 import { nowIso, truncate } from "./json";
 import type { EndpointRow, EventRow, ReplayAttemptRow } from "./types";
 
@@ -64,7 +65,7 @@ export async function replayEventForProject(
 ): Promise<ReplayResult> {
   const endpoint = await findEndpointForProject(db, event.endpoint_id, projectId);
   if (!endpoint) {
-    throw new Error("Endpoint not found for event");
+    throw new ApiError(410, "endpoint_gone", "Endpoint has been deleted");
   }
   return replayEvent(db, event, endpoint);
 }
@@ -72,7 +73,7 @@ export async function replayEventForProject(
 export async function replayEventUnscoped(db: D1Database, event: EventRow): Promise<ReplayResult> {
   const endpoint = await findEndpointById(db, event.endpoint_id);
   if (!endpoint) {
-    throw new Error("Endpoint not found for event");
+    throw new ApiError(410, "endpoint_gone", "Endpoint has been deleted");
   }
   return replayEvent(db, event, endpoint);
 }

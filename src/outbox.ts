@@ -1,4 +1,5 @@
 import { listPendingReplayEvents, updateEventReplaySchedule } from "./db";
+import { ApiError } from "./errors";
 import { nowIso } from "./json";
 import { replayEventUnscoped } from "./replay";
 
@@ -26,21 +27,34 @@ export async function processPendingReplays(
   let failed = 0;
 
   for (const event of pending) {
-    const result = await replayEventUnscoped(db, event);
-    if (result.attempt.success) {
-      succeeded += 1;
-      continue;
-    }
+    try {
+      const result = await replayEventUnscoped(db, event);
+      if (result.attempt.success) {
+        succeeded += 1;
+        continue;
+      }
 
-    failed += 1;
-    const retryCount = (event.retry_count ?? 0) + 1;
-    const nextRetryAt = nextReplayRetryAt(retryCount, result.attempt.attempted_at);
-    await updateEventReplaySchedule(db, event.id, {
-      status: nextRetryAt ? "pending_replay" : "replay_failed",
-      updatedAt: result.attempt.attempted_at,
-      retryCount,
-      nextRetryAt,
-    });
+      failed += 1;
+      const retryCount = (event.retry_count ?? 0) + 1;
+      const nextRetryAt = nextReplayRetryAt(retryCount, result.attempt.attempted_at);
+      await updateEventReplaySchedule(db, event.id, {
+        status: nextRetryAt ? "pending_replay" : "replay_failed",
+        updatedAt: result.attempt.attempted_at,
+        retryCount,
+        nextRetryAt,
+      });
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.code !== "endpoint_gone") {
+        throw err;
+      }
+      failed += 1;
+      await updateEventReplaySchedule(db, event.id, {
+        status: "replay_failed",
+        updatedAt: now,
+        retryCount: event.retry_count ?? 0,
+        nextRetryAt: null,
+      });
+    }
   }
 
   return { processed: pending.length, succeeded, failed };

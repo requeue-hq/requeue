@@ -27,6 +27,8 @@ Six outbox attempts total (first try + five retries). Events still inside a back
 
 A successful outbox (or manual) delivery sets `status = replayed` and clears `next_retry_at`.
 
+Soft-deleting an endpoint (`DELETE /v1/endpoints/:id`) marks that destination's `pending_replay` events `replay_failed` and clears `next_retry_at`, so cron does not keep POSTing to a retired URL.
+
 ## What is not retried automatically
 
 Synchronous `POST /v1/events/:id/replay` (no `enqueue`) is one-shot. A failure becomes `replay_failed` with no `next_retry_at`. Re-queue it with `{ "enqueue": true }` (resets `retry_count`) or call replay again.

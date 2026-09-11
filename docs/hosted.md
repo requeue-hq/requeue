@@ -46,7 +46,7 @@ curl -sS "$REQUEUE_API/v1/endpoints" \
   -d '{"name":"Orders worker","target_url":"https://httpbin.org/post"}'
 ```
 
-Use `endpoint.endpoint_key` from the response for `POST /v1/ingest/:endpointKey`. List endpoints (`GET /v1/endpoints`), list events, and replay with the same Bearer key. List responses include `has_secret` and never the raw HMAC secret.
+Use `endpoint.endpoint_key` from the response for `POST /v1/ingest/:endpointKey`. List, update (`PATCH`), or retire (`DELETE`) endpoints, list events, and replay with the same Bearer key. List/get responses include `has_secret` and never the raw HMAC secret. `PATCH` does not rotate `endpoint_key`. Deleted endpoints stay out of list/get; ingest then returns `410`.
 
 Do not send the local demo key to hosted. Do not ingest private payloads with a key you do not control.
 
