@@ -25,7 +25,25 @@ Local Wrangler uses a seed key that is **not** valid on hosted. Details: [hosted
 
 If the endpoint has a `secret`, replay POSTs the **original stored payload** and adds HMAC headers (`X-Requeue-Event-Id`, `X-Requeue-Timestamp`, `X-Requeue-Signature`). The contract is in the [README](../README.md#quickstart) (hosted Quickstart) and [`src/replay.ts`](../src/replay.ts). This FAQ does not repeat it.
 
-Retries and the D1 outbox: [retries.md](retries.md).
+Retries and the D1 outbox: [retries.md](retries.md). Immediate vs queued replay: below.
+
+## How do I update or retire an endpoint?
+
+Same Bearer key as create. Hosted curls: [quickstart.md](quickstart.md).
+
+- `GET /v1/endpoints` / `GET /v1/endpoints/:id` — list or fetch one (no raw `secret`; `has_secret` only).
+- `PATCH /v1/endpoints/:id` — partial `name`, `target_url`, and/or `secret`. Empty/`null` secret clears HMAC. The ingest key (`epk_…`) stays put so you do not redeploy workers.
+- `DELETE /v1/endpoints/:id` — soft-delete. Inbox history stays. Further ingest returns `410` with `error.code: "endpoint_gone"`. Queued outbox replays for that destination are marked `replay_failed`.
+
+Contract: [README HTTP API](../README.md#http-api).
+
+## Immediate replay vs the outbox?
+
+`POST /v1/events/:id/replay` delivers now and is one-shot. `{ "enqueue": true }` marks the event `pending_replay`; a once-a-minute cron drains the D1 outbox and retries failed deliveries (1m, 2m, 4m, 8m, 16m, then `replay_failed`). Cloudflare Queues are not used.
+
+List with `GET /v1/events?status=failed&endpoint_id=ep_…`. Statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`.
+
+Signing (when the endpoint has a `secret`) is unchanged — see above. Backoff table: [retries.md](retries.md).
 
 ## How does Requeue compare?
 
