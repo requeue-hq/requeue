@@ -276,14 +276,22 @@ export async function markEventPendingReplay(
   db: D1Database,
   eventId: string,
   updatedAt: string,
+  delivery?: { payload: string | null; headers: string | null },
 ): Promise<void> {
   await db
     .prepare(
       `UPDATE events
-       SET status = 'pending_replay', updated_at = ?, retry_count = 0, next_retry_at = ?
+       SET status = 'pending_replay', updated_at = ?, retry_count = 0, next_retry_at = ?,
+           delivery_payload = ?, delivery_headers = ?
        WHERE id = ?`,
     )
-    .bind(updatedAt, updatedAt, eventId)
+    .bind(
+      updatedAt,
+      updatedAt,
+      delivery?.payload ?? null,
+      delivery?.headers ?? null,
+      eventId,
+    )
     .run();
 }
 

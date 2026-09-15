@@ -109,11 +109,11 @@ Inspect and replay from [getrequeue.com/app](https://getrequeue.com/app): set AP
 
 Self-hosting your own Worker? Mint the first key with `POST /v1/api-keys` and Worker secret `BOOTSTRAP_SECRET`. See [docs/api-keys.md](docs/api-keys.md) and [docs/hosted.md](docs/hosted.md).
 
-Replay POSTs the **original stored payload** (not the ingest envelope) to `target_url`. If the endpoint has a `secret`, Requeue adds:
+Replay POSTs the **stored payload** (not the ingest envelope) to `target_url`, unless the replay request supplies a `payload` override (see [Edit before replay](#edit-before-replay)). If the endpoint has a `secret`, Requeue adds:
 
 - `X-Requeue-Event-Id`
 - `X-Requeue-Timestamp`
-- `X-Requeue-Signature: sha256=<hmac>` over `{timestamp}.{eventId}.{payload}`
+- `X-Requeue-Signature: sha256=<hmac>` over `{timestamp}.{eventId}.{payload}` where `payload` is the **body actually delivered**
 
 ### Scripts
 
@@ -185,14 +185,14 @@ flowchart LR
   MGMT --> AUTH
   AUTH --> D1
   MGMT -->|POST /v1/events/:id/replay| OUT
-  OUT -->|POST original payload| TGT
+  OUT -->|POST stored or override payload| TGT
   OUT --> D1
 ```
 
 **Ingest** is authenticated by the endpoint key in the URL (a capability token).  
 **Management** (create endpoints, list events, replay) requires `Authorization: Bearer <api_key>`.
 
-Replay is synchronous by default: Requeue POSTs the stored payload to `target_url` and writes a `replay_attempts` row. Pass `{"enqueue": true}` to mark the event `pending_replay`; a once-a-minute cron drains that D1 outbox. Failed outbox deliveries retry with exponential backoff (still D1-backed). Cloudflare Queues are not used. See [docs/retries.md](docs/retries.md).
+Replay is synchronous by default: Requeue POSTs the stored payload (or a request `payload` override) to `target_url` and writes a `replay_attempts` row. Pass `{"enqueue": true}` to mark the event `pending_replay`; a once-a-minute cron drains that D1 outbox. Failed outbox deliveries retry with exponential backoff (still D1-backed). Cloudflare Queues are not used. See [docs/retries.md](docs/retries.md).
 
 ## API keys
 
@@ -223,7 +223,7 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60 ingest/min/endpoint; `429` when exceeded) |
 | `GET` | `/v1/events` | Bearer | List events; `?status=` + `?endpoint_id=` + `?limit=` |
 | `GET` | `/v1/events/:id` | Bearer | Event + replay attempts |
-| `POST` | `/v1/events/:id/replay` | Bearer | Deliver payload now, or `{ "enqueue": true }` |
+| `POST` | `/v1/events/:id/replay` | Bearer | Deliver now, or `{ enqueue, payload?, headers? }` (override is this delivery only) |
 | `GET` | `/v1/billing` | Bearer | Billing stub |
 
 See [API keys](#api-keys).
@@ -238,7 +238,29 @@ Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optiona
 
 `POST /v1/ingest/:endpointKey` is limited to **60 requests per minute per endpoint** (fixed 60s D1 window). Override with Worker binding `INGEST_RATE_LIMIT`. Over-limit requests return `429` with `error.code: "rate_limited"` and `Retry-After`.
 
-Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Details: [docs/retries.md](docs/retries.md). Hosted curls for filters, queued replay, and PATCH/DELETE: [docs/quickstart.md](docs/quickstart.md).
+Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Details: [docs/retries.md](docs/retries.md). Hosted curls for filters, queued replay, edit-before-replay, and PATCH/DELETE: [docs/quickstart.md](docs/quickstart.md).
+
+### Edit before replay
+
+`POST /v1/events/:id/replay` may include an optional JSON body. Empty body and `{ "enqueue": true }` stay backward compatible.
+
+```json
+{
+  "enqueue": false,
+  "payload": { "order_id": "ord_123", "amount": 4200 },
+  "headers": { "x-request-id": "req_fixed" }
+}
+```
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `payload` | omitted | Deliver the stored inbox corpse (`events.payload`) |
+| `payload` | present | Deliver this JSON/body for **this attempt only** |
+| `headers` | omitted | Forward the stored ingest headers |
+| `headers` | present | Forward this object for **this attempt only** (same safe-header filter as ingest) |
+| `enqueue` | `false` | `true` queues the same override on the D1 outbox |
+
+The original `events.payload` / `events.headers` are the audit corpse. Replay does **not** overwrite them. `GET /v1/events/:id` still returns the ingested body. Queued overrides live on `events.delivery_payload` / `events.delivery_headers` so cron retries deliver the edit, not the stale corpse. HMAC (`secret` on the endpoint) signs the body that is actually POSTed.
 
 ### Ingest body
 
@@ -257,7 +279,7 @@ If `payload` is omitted, the raw request body is stored as the failure payload. 
 
 ## Schema
 
-Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`), ingest rate-limit windows and replay backoff columns (`0003`), the marketing waitlist (`0004`), and endpoint soft-delete (`0005`, `endpoints.deleted_at`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
+Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`), ingest rate-limit windows and replay backoff columns (`0003`), the marketing waitlist (`0004`), endpoint soft-delete (`0005`, `endpoints.deleted_at`), and replay delivery overrides (`0006`, `events.delivery_payload` / `delivery_headers`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
 
 | Table | Role |
 | --- | --- |
@@ -307,7 +329,7 @@ npm run typecheck
 
 Pull requests and pushes to `main` run the same commands on GitHub Actions. Pushes to `main` also deploy after CI passes when Cloudflare secrets are set — see [CI.md](CI.md).
 
-Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, endpoint listing / update / soft-delete, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
+Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, edit-before-replay overrides (immediate + queued, HMAC on the delivered body), endpoint listing / update / soft-delete, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
 
 ## License
 

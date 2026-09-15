@@ -23,9 +23,9 @@ Local Wrangler uses a seed key that is **not** valid on hosted. Details: [hosted
 
 ## How does replay signing work?
 
-If the endpoint has a `secret`, replay POSTs the **original stored payload** and adds HMAC headers (`X-Requeue-Event-Id`, `X-Requeue-Timestamp`, `X-Requeue-Signature`). The contract is in the [README](../README.md#quickstart) (hosted Quickstart) and [`src/replay.ts`](../src/replay.ts). This FAQ does not repeat it.
+If the endpoint has a `secret`, replay POSTs the **body actually delivered** (stored corpse, or a `payload` override) and adds HMAC headers (`X-Requeue-Event-Id`, `X-Requeue-Timestamp`, `X-Requeue-Signature`). The contract is in the [README](../README.md#quickstart) (hosted Quickstart) and [`src/replay.ts`](../src/replay.ts). This FAQ does not repeat it.
 
-Retries and the D1 outbox: [retries.md](retries.md). Immediate vs queued replay: below.
+Retries and the D1 outbox: [retries.md](retries.md). Immediate vs queued replay: below. Edit the body before replay: next section.
 
 ## How do I update or retire an endpoint?
 
@@ -36,6 +36,12 @@ Same Bearer key as create. Hosted curls: [quickstart.md](quickstart.md).
 - `DELETE /v1/endpoints/:id` — soft-delete. Inbox history stays. Further ingest returns `410` with `error.code: "endpoint_gone"`. Queued outbox replays for that destination are marked `replay_failed`.
 
 Contract: [README HTTP API](../README.md#http-api).
+
+## Can I edit the body and retry?
+
+Yes. `POST /v1/events/:id/replay` accepts optional `payload` and `headers`. They apply to **this delivery only**. Requeue does not overwrite `events.payload` — that row stays the ingest audit corpse. `GET /v1/events/:id` still returns the original body.
+
+`{ "enqueue": true, "payload": { ... } }` stores the override on the outbox row (`delivery_payload` / `delivery_headers`) so cron retries send the edit. HMAC signs the delivered body. Omit `payload` for current behavior. Contract: [README — Edit before replay](../README.md#edit-before-replay). Hosted curl: [quickstart.md](quickstart.md).
 
 ## Immediate replay vs the outbox?
 

@@ -40,6 +40,10 @@ export type EventRow = {
   updated_at: string;
   retry_count: number;
   next_retry_at: string | null;
+  /** Outbox-only body for the current queued replay. Never overwrites `payload`. */
+  delivery_payload?: string | null;
+  /** Outbox-only headers for the current queued replay. Never overwrites `headers`. */
+  delivery_headers?: string | null;
 };
 
 export type ReplayAttemptRow = {

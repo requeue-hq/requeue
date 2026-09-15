@@ -31,7 +31,7 @@ import {
   parseIngestRateLimit,
   parseWaitlistRateLimit,
 } from "./ratelimit";
-import { replayEventForProject } from "./replay";
+import { replayEventForProject, type ReplayOverride } from "./replay";
 import { publicApiKey, publicAttempt, publicEndpoint, publicEvent, publicProject } from "./serialize";
 import type { ApiKeyRow, AppEnv, EndpointRow, EventStatus, ProjectRow } from "./types";
 
@@ -392,9 +392,17 @@ app.post("/v1/events/:id/replay", requireApiKey, async (c) => {
   }
 
   const body = await readOptionalJsonObject(c.req);
+  const parsed = parseReplayOverride(body);
+  if (!parsed.ok) {
+    return jsonError(c, parsed.status, parsed.code, parsed.message);
+  }
+
   if (body?.enqueue === true) {
     const updatedAt = nowIso();
-    await markEventPendingReplay(c.env.DB, event.id, updatedAt);
+    await markEventPendingReplay(c.env.DB, event.id, updatedAt, {
+      payload: parsed.override.payload ?? null,
+      headers: hasOwn(parsed.override, "headers") ? (parsed.override.headers ?? null) : null,
+    });
     return c.json({
       event: publicEvent({
         ...event,
@@ -407,7 +415,12 @@ app.post("/v1/events/:id/replay", requireApiKey, async (c) => {
     });
   }
 
-  const result = await replayEventForProject(c.env.DB, event, c.get("projectId"));
+  const result = await replayEventForProject(
+    c.env.DB,
+    event,
+    c.get("projectId"),
+    Object.keys(parsed.override).length > 0 ? parsed.override : undefined,
+  );
   return c.json({
     event: publicEvent({ ...event, status: result.eventStatus, updated_at: result.attempt.attempted_at }),
     attempt: publicAttempt(result.attempt),
@@ -436,6 +449,42 @@ async function readOptionalJsonObject(req: { text: () => Promise<string> }): Pro
   } catch {
     return null;
   }
+}
+
+type ReplayOverrideParse =
+  | { ok: true; override: ReplayOverride }
+  | { ok: false; status: 400 | 413; code: string; message: string };
+
+function parseReplayOverride(body: Record<string, unknown> | null): ReplayOverrideParse {
+  if (!body) return { ok: true, override: {} };
+
+  const override: ReplayOverride = {};
+
+  if (hasOwn(body, "payload")) {
+    const payload =
+      typeof body.payload === "string" ? body.payload : JSON.stringify(body.payload ?? null);
+    if (payload.length === 0) {
+      return { ok: false, status: 400, code: "empty_payload", message: "payload must not be empty" };
+    }
+    if (byteLength(payload) > MAX_PAYLOAD_BYTES) {
+      return { ok: false, status: 413, code: "payload_too_large", message: "Payload exceeds 512KB" };
+    }
+    override.payload = payload;
+  }
+
+  if (hasOwn(body, "headers")) {
+    if (body.headers !== null && !asRecord(body.headers)) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_body",
+        message: "headers must be a JSON object when provided",
+      };
+    }
+    override.headers = JSON.stringify(body.headers ?? null);
+  }
+
+  return { ok: true, override };
 }
 
 function parseIngestBody(
