@@ -1,7 +1,7 @@
 import { listPendingReplayEvents, updateEventReplaySchedule } from "./db";
 import { ApiError } from "./errors";
 import { nowIso } from "./json";
-import { replayEventUnscoped } from "./replay";
+import { replayEventUnscoped, replayOverrideFromEvent } from "./replay";
 
 /** First outbox try plus this many automatic retries (6 deliveries total). */
 export const MAX_OUTBOX_ATTEMPTS = 6;
@@ -28,7 +28,7 @@ export async function processPendingReplays(
 
   for (const event of pending) {
     try {
-      const result = await replayEventUnscoped(db, event);
+      const result = await replayEventUnscoped(db, event, replayOverrideFromEvent(event));
       if (result.attempt.success) {
         succeeded += 1;
         continue;

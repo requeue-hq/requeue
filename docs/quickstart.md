@@ -62,7 +62,7 @@ curl -sS -X POST "$REQUEUE_API/v1/events/evt_REPLACE_ME/replay" \
   -H "Authorization: Bearer $REQUEUE_KEY"
 ```
 
-Replay POSTs the **original stored payload** to `target_url`. That immediate POST is one-shot. To put the event on the D1 outbox (cron retries with backoff), pass `{"enqueue": true}`:
+Replay POSTs the **stored payload** to `target_url`. That immediate POST is one-shot. To put the event on the D1 outbox (cron retries with backoff), pass `{"enqueue": true}`:
 
 ```bash
 curl -sS -X POST "$REQUEUE_API/v1/events/evt_REPLACE_ME/replay" \
@@ -72,6 +72,22 @@ curl -sS -X POST "$REQUEUE_API/v1/events/evt_REPLACE_ME/replay" \
 ```
 
 The event becomes `pending_replay`. Backoff table: [retries.md](retries.md).
+
+## Edit before replay
+
+Fix a typo or stale field for **this delivery only**. The inbox row stays the original corpse — `GET /v1/events/:id` still shows what was ingested.
+
+```bash
+curl -sS -X POST "$REQUEUE_API/v1/events/evt_REPLACE_ME/replay" \
+  -H "Authorization: Bearer $REQUEUE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payload": { "order_id": "ord_123", "amount": 4200 },
+    "headers": { "x-request-id": "req_fixed" }
+  }'
+```
+
+Omit `payload` to keep the stored body. Omit `headers` to keep the stored ingest headers. `{ "enqueue": true, "payload": { ... } }` stores the override on the outbox row so cron retries deliver the edit; HMAC signs the body that is actually POSTed. Contract: [README — Edit before replay](../README.md#edit-before-replay).
 
 ## Filter the inbox
 

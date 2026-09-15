@@ -4,7 +4,7 @@ Requeue does **not** use Cloudflare Queues. Automatic retries are the same D1 ou
 
 ## How a replay gets onto the outbox
 
-- `POST /v1/events/:id/replay` with `{ "enqueue": true }` sets `status = pending_replay`, `retry_count = 0`, and `next_retry_at = now`.
+- `POST /v1/events/:id/replay` with `{ "enqueue": true }` sets `status = pending_replay`, `retry_count = 0`, and `next_retry_at = now`. Optional `payload` / `headers` on that request are stored on `events.delivery_payload` / `events.delivery_headers` so later cron attempts deliver the override. The ingest corpse (`events.payload`) is not rewritten.
 - `wrangler.toml` runs `* * * * *`. Each tick calls `processPendingReplays` ([`src/outbox.ts`](../src/outbox.ts)).
 - `POST /v1/internal/process-outbox` (Bearer) drains the same queue for ops/tests.
 
@@ -35,4 +35,4 @@ Synchronous `POST /v1/events/:id/replay` (no `enqueue`) is one-shot. A failure b
 
 ## Free-tier notes
 
-Backoff lives on `events.retry_count` / `events.next_retry_at` ([`migrations/0003_ingest_limits_and_replay_backoff.sql`](../migrations/0003_ingest_limits_and_replay_backoff.sql)). No KV, Queues, or Durable Objects.
+Backoff lives on `events.retry_count` / `events.next_retry_at` ([`migrations/0003_ingest_limits_and_replay_backoff.sql`](../migrations/0003_ingest_limits_and_replay_backoff.sql)). Delivery overrides live on `events.delivery_payload` / `events.delivery_headers` ([`migrations/0006_replay_delivery_override.sql`](../migrations/0006_replay_delivery_override.sql)). No KV, Queues, or Durable Objects.
