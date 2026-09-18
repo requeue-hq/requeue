@@ -26,7 +26,7 @@ Open the inbox at [getrequeue.com/app](https://getrequeue.com/app). Paste `https
 
 Hosted keys are not public. Join the [waitlist](https://getrequeue.com) (`POST /v1/waitlist`) or email [maya@getrequeue.com](mailto:maya@getrequeue.com) and Maya will mint one. Do not send the local demo key to production.
 
-Five minutes, hosted only: [docs/quickstart.md](docs/quickstart.md). FAQ (what this is, vs Hookdeck/Svix, how to get a key): [docs/faq.md](docs/faq.md).
+Five minutes, hosted only: [docs/quickstart.md](docs/quickstart.md). FAQ (what this is, vs Hookdeck/Svix, how to get a key): [docs/faq.md](docs/faq.md). Local ingest → list → replay: [Demo](#demo).
 
 ## Quickstart
 
@@ -82,6 +82,60 @@ curl -sS -X POST http://127.0.0.1:8787/v1/events/evt_REPLACE_ME/replay \
 Note `endpoint.id` and `endpoint.endpoint_key` from the create-endpoint response, then substitute `ep_REPLACE_ME` / `epk_REPLACE_ME` / `evt_REPLACE_ME`.
 
 The dashboard at [getrequeue.com/app](https://getrequeue.com/app) is client-only. Point it at `http://127.0.0.1:8787` and paste the local seed key to inspect and replay without curl.
+
+### Demo
+
+Local Wrangler (`npm run dev`) and the seed key. Health → create endpoint → ingest one failure → list → replay to httpbin (~25s).
+
+GitHub cannot host the [asciinema](https://asciinema.org) player, so the transcript is inline. Replay the recording with `asciinema play docs/assets/demo.cast`. Same session: [docs/assets/demo.md](docs/assets/demo.md).
+
+```console
+$ export RQ=http://127.0.0.1:8787
+$ export KEY=rq_demo_local_dev_only_do_not_use_in_prod
+
+$ curl -sS $RQ/health
+{"ok":true,"service":"requeue","version":"0.1.0"}
+
+$ curl -sS $RQ/v1/endpoints -H "Authorization: Bearer $KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"Orders worker","target_url":"https://httpbin.org/post"}'
+{
+  "endpoint": {
+    "id": "ep_24bacd84940613f6bff923b6a4bf35e5",
+    "endpoint_key": "epk_9ae71dd2735f27d0dee49fce6505e256a251",
+    "target_url": "https://httpbin.org/post",
+    "ingest_path": "/v1/ingest/epk_9ae71dd2735f27d0dee49fce6505e256a251"
+  }
+}
+
+$ curl -sS $RQ/v1/ingest/epk_9ae71dd2735f27d0dee49fce6505e256a251 \
+    -H "Content-Type: application/json" \
+    -d '{"payload":{"order_id":"ord_123","amount":4200},"reason":"fulfillment timeout","source":"worker"}'
+{
+  "event": {
+    "id": "evt_e9faabfc18523fe5a56f59a91a077901",
+    "status": "failed",
+    "payload": {"order_id": "ord_123", "amount": 4200},
+    "reason": "fulfillment timeout"
+  }
+}
+
+$ curl -sS "$RQ/v1/events?status=failed&endpoint_id=ep_24bacd84940613f6bff923b6a4bf35e5" \
+    -H "Authorization: Bearer $KEY"
+{"count":1,"events":[{"id":"evt_e9faabfc18523fe5a56f59a91a077901","status":"failed"}]}
+
+$ curl -sS -X POST $RQ/v1/events/evt_e9faabfc18523fe5a56f59a91a077901/replay \
+    -H "Authorization: Bearer $KEY" \
+    | jq '{status: .event.status, success: .attempt.success, status_code: .attempt.status_code, queued}'
+{
+  "status": "replayed",
+  "success": true,
+  "status_code": 200,
+  "queued": false
+}
+```
+
+Captured against local Wrangler. The seed key is not valid on hosted. The last `jq` keeps the httpbin echo out of the recording.
 
 ### Hosted (`https://api.getrequeue.com`)
 
