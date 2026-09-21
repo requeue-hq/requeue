@@ -47,7 +47,7 @@ Yes. `POST /v1/events/:id/replay` accepts optional `payload` and `headers`. They
 
 `POST /v1/events/:id/replay` delivers now and is one-shot. `{ "enqueue": true }` marks the event `pending_replay`; a once-a-minute cron drains the D1 outbox and retries failed deliveries (1m, 2m, 4m, 8m, 16m, then `replay_failed`). Cloudflare Queues are not used.
 
-List with `GET /v1/events?status=failed&endpoint_id=ep_…`. Statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`.
+List with `GET /v1/events?status=failed&endpoint_id=ep_…`. Optional `q` searches id, reason, source, and payload text. Statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`.
 
 Signing (when the endpoint has a `secret`) is unchanged — see above. Backoff table: [retries.md](retries.md).
 
