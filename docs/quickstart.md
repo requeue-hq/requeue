@@ -94,7 +94,7 @@ Omit `payload` to keep the stored body. Omit `headers` to keep the stored ingest
 `GET /v1/events` accepts `?status=` (`failed`, `pending_replay`, `replayed`, `replay_failed`) and `?endpoint_id=` (an `ep_…` id). Combine them to inspect one destination. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored).
 
 ```bash
-curl -sS "$REQUEUE_API/v1/events?status=failed&endpoint_id=ep_REPLACE_ME" \
+curl -sS "$REQUEUE_API/v1/events?status=failed&endpoint_id=ep_REPLACE_ME&q=ord_123" \
   -H "Authorization: Bearer $REQUEUE_KEY"
 ```
 
