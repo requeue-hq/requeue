@@ -183,6 +183,7 @@ export async function listEventsForProject(
   status: EventStatus | undefined,
   limit: number,
   endpointId?: string,
+  query?: string,
 ): Promise<EventRow[]> {
   const conditions = ["ep.project_id = ?"];
   const binds: Array<string | number> = [projectId];
@@ -195,16 +196,32 @@ export async function listEventsForProject(
     conditions.push("e.endpoint_id = ?");
     binds.push(endpointId);
   }
+  if (query) {
+    // Equality filters above stay sargable. LIKE '%q%' runs only inside that set.
+    const needle = sqlLikeNeedle(query);
+    conditions.push(
+      `(LOWER(e.id) LIKE '%' || ? || '%' ESCAPE '\\'
+        OR LOWER(COALESCE(e.reason, '')) LIKE '%' || ? || '%' ESCAPE '\\'
+        OR LOWER(COALESCE(e.source, '')) LIKE '%' || ? || '%' ESCAPE '\\'
+        OR LOWER(CAST(e.payload AS TEXT)) LIKE '%' || ? || '%' ESCAPE '\\')`,
+    );
+    binds.push(needle, needle, needle, needle);
+  }
 
-  const query = `SELECT e.* FROM events e
+  const querySql = `SELECT e.* FROM events e
        INNER JOIN endpoints ep ON ep.id = e.endpoint_id
        WHERE ${conditions.join(" AND ")}
        ORDER BY e.created_at DESC
        LIMIT ?`;
   binds.push(limit);
 
-  const result = await db.prepare(query).bind(...binds).all<EventRow>();
+  const result = await db.prepare(querySql).bind(...binds).all<EventRow>();
   return result.results ?? [];
+}
+
+/** Lowercased substring needle with LIKE metacharacters escaped. */
+function sqlLikeNeedle(raw: string): string {
+  return raw.toLowerCase().replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
 export async function findEventForProject(

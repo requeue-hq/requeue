@@ -275,14 +275,14 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | `PATCH` | `/v1/endpoints/:id` | Bearer | Update `name`, `target_url`, and/or `secret` (ingest path stays put) |
 | `DELETE` | `/v1/endpoints/:id` | Bearer | Soft-delete; ingest returns `410 endpoint_gone` |
 | `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60 ingest/min/endpoint; `429` when exceeded) |
-| `GET` | `/v1/events` | Bearer | List events; `?status=` + `?endpoint_id=` + `?limit=` |
+| `GET` | `/v1/events` | Bearer | List events; `?status=` + `?endpoint_id=` + `?q=` + `?limit=` |
 | `GET` | `/v1/events/:id` | Bearer | Event + replay attempts |
 | `POST` | `/v1/events/:id/replay` | Bearer | Deliver now, or `{ enqueue, payload?, headers? }` (override is this delivery only) |
 | `GET` | `/v1/billing` | Bearer | Billing stub |
 
 See [API keys](#api-keys).
 
-Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint.
+Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored) and combines with `status` and `endpoint_id`.
 
 `GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key` and `has_secret`, never the HMAC `secret`.
 

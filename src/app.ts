@@ -358,12 +358,14 @@ app.get("/v1/events", requireApiKey, async (c) => {
   }
 
   const limit = clampInt(c.req.query("limit"), 50, 1, 200);
+  const q = c.req.query("q")?.trim() || undefined;
   const events = await listEventsForProject(
     c.env.DB,
     c.get("projectId"),
     statusParam as EventStatus | undefined,
     limit,
     endpointIdParam,
+    q,
   );
 
   return c.json({
