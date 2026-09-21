@@ -79,7 +79,7 @@ curl -sS -X POST http://127.0.0.1:8787/v1/events/evt_REPLACE_ME/replay \
   -H "Authorization: Bearer rq_demo_local_dev_only_do_not_use_in_prod"
 ```
 
-Note `endpoint.id` and `endpoint.endpoint_key` from the create-endpoint response, then substitute `ep_REPLACE_ME` / `epk_REPLACE_ME` / `evt_REPLACE_ME`.
+Note `endpoint.id` and `endpoint.endpoint_key` from the create-endpoint response, then substitute `ep_REPLACE_ME` / `epk_REPLACE_ME` / `evt_REPLACE_ME`. Optional `q` on that list call searches the event id, reason, source, and payload (case-insensitive) — `q=ord_123` matches the sample above.
 
 The dashboard at [getrequeue.com/app](https://getrequeue.com/app) is client-only. Point it at `http://127.0.0.1:8787` and paste the local seed key to inspect and replay without curl.
 
