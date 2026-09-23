@@ -46,6 +46,9 @@ const ENDPOINT_ID_RE = /^ep_[0-9a-f]+$/;
 
 const MAX_PAYLOAD_BYTES = 512 * 1024;
 
+/** One Worker turn. Callers should leave `enqueue` at its default and let cron drain. */
+export const MAX_BULK_REPLAY_IDS = 50;
+
 const MAX_WAITLIST_FIELD_CHARS = 128;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -374,6 +377,26 @@ app.get("/v1/events", requireApiKey, async (c) => {
   });
 });
 
+app.post("/v1/events/bulk-replay", requireApiKey, async (c) => {
+  const parsed = parseBulkReplayBody(asRecord(await readJsonBody(c)));
+  if (!parsed.ok) {
+    return jsonError(c, parsed.status, parsed.code, parsed.message);
+  }
+
+  const projectId = c.get("projectId");
+  const results: BulkReplayItem[] = [];
+  for (const id of parsed.ids) {
+    results.push(await bulkReplayOne(c.env.DB, projectId, id, parsed.enqueue));
+  }
+
+  const okCount = results.reduce((count, item) => count + (item.ok ? 1 : 0), 0);
+  return c.json({
+    results,
+    ok_count: okCount,
+    error_count: results.length - okCount,
+  });
+});
+
 app.get("/v1/events/:id", requireApiKey, async (c) => {
   const event = await findEventForProject(c.env.DB, c.req.param("id"), c.get("projectId"));
   if (!event) {
@@ -450,6 +473,154 @@ async function readOptionalJsonObject(req: { text: () => Promise<string> }): Pro
     return asRecord(JSON.parse(text));
   } catch {
     return null;
+  }
+}
+
+type BulkReplaySuccess = {
+  id: string;
+  ok: true;
+  event: ReturnType<typeof publicEvent>;
+  attempt: ReturnType<typeof publicAttempt> | null;
+  queued: boolean;
+};
+
+type BulkReplayFailure = {
+  id: string;
+  ok: false;
+  error: { code: string; message: string };
+};
+
+type BulkReplayItem = BulkReplaySuccess | BulkReplayFailure;
+
+type BulkReplayParse =
+  | { ok: true; ids: string[]; enqueue: boolean }
+  | { ok: false; status: 400; code: string; message: string };
+
+function parseBulkReplayBody(body: Record<string, unknown> | null): BulkReplayParse {
+  if (!body) {
+    return { ok: false, status: 400, code: "invalid_body", message: "JSON object body required" };
+  }
+
+  if (!hasOwn(body, "ids") || !Array.isArray(body.ids)) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_body",
+      message: "ids must be a non-empty array of event ids",
+    };
+  }
+
+  if (body.ids.length === 0) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_body",
+      message: "ids must be a non-empty array of event ids",
+    };
+  }
+
+  if (body.ids.length > MAX_BULK_REPLAY_IDS) {
+    return {
+      ok: false,
+      status: 400,
+      code: "too_many_ids",
+      message: `ids is limited to ${MAX_BULK_REPLAY_IDS} event ids per request`,
+    };
+  }
+
+  const ids: string[] = [];
+  for (const id of body.ids) {
+    if (typeof id !== "string" || id.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_body",
+        message: "ids must be non-empty strings",
+      };
+    }
+    ids.push(id);
+  }
+
+  let enqueue = true;
+  if (hasOwn(body, "enqueue")) {
+    if (typeof body.enqueue !== "boolean") {
+      return { ok: false, status: 400, code: "invalid_body", message: "enqueue must be a boolean" };
+    }
+    enqueue = body.enqueue;
+  }
+
+  // Edit-before-replay stays on POST /v1/events/:id/replay. Reject here so a batch
+  // cannot look like it applied an override that this route ignores.
+  if (hasOwn(body, "payload") || hasOwn(body, "headers")) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_body",
+      message:
+        "payload and headers overrides are not supported on bulk replay; use POST /v1/events/:id/replay",
+    };
+  }
+
+  return { ok: true, ids, enqueue };
+}
+
+async function bulkReplayOne(
+  db: D1Database,
+  projectId: string,
+  eventId: string,
+  enqueue: boolean,
+): Promise<BulkReplayItem> {
+  const event = await findEventForProject(db, eventId, projectId);
+  if (!event) {
+    return {
+      id: eventId,
+      ok: false,
+      error: { code: "not_found", message: "Event not found" },
+    };
+  }
+
+  if (enqueue) {
+    const updatedAt = nowIso();
+    // Same write as single-event enqueue with no override: clear any prior
+    // delivery_* so cron POSTs the stored corpse, not a stale edit.
+    await markEventPendingReplay(db, event.id, updatedAt, { payload: null, headers: null });
+    return {
+      id: event.id,
+      ok: true,
+      event: publicEvent({
+        ...event,
+        status: "pending_replay",
+        updated_at: updatedAt,
+        retry_count: 0,
+        next_retry_at: updatedAt,
+      }),
+      attempt: null,
+      queued: true,
+    };
+  }
+
+  try {
+    const result = await replayEventForProject(db, event, projectId);
+    return {
+      id: event.id,
+      ok: true,
+      event: publicEvent({
+        ...event,
+        status: result.eventStatus,
+        updated_at: result.attempt.attempted_at,
+      }),
+      attempt: publicAttempt(result.attempt),
+      queued: false,
+    };
+  } catch (err) {
+    if (err instanceof ApiError) {
+      return {
+        id: event.id,
+        ok: false,
+        error: { code: err.code, message: err.message },
+      };
+    }
+    throw err;
   }
 }
 
