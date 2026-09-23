@@ -73,6 +73,19 @@ curl -sS -X POST "$REQUEUE_API/v1/events/evt_REPLACE_ME/replay" \
 
 The event becomes `pending_replay`. Backoff table: [retries.md](retries.md).
 
+## Bulk replay
+
+Redeliver many failures in one call after an outage. `enqueue` defaults to `true` (D1 outbox, not a long synchronous Worker run). Cap is 50 ids. Missing ids are per-item errors; the rest still queue. This route does not accept `payload` or `headers` — edit one event with the single-event replay below.
+
+```bash
+curl -sS -X POST "$REQUEUE_API/v1/events/bulk-replay" \
+  -H "Authorization: Bearer $REQUEUE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ids":["evt_ONE","evt_TWO"]}'
+```
+
+Response: `results` (one entry per id, same order), plus `ok_count` and `error_count`. A success entry is `{ "id", "ok": true, "event", "attempt", "queued" }` (`attempt` is `null` when queued). A failure entry is `{ "id", "ok": false, "error": { "code", "message" } }`. Pass `"enqueue": false` to POST each id immediately. Contract: [README — Bulk replay](../README.md#bulk-replay).
+
 ## Edit before replay
 
 Fix a typo or stale field for **this delivery only**. The inbox row stays the original corpse — `GET /v1/events/:id` still shows what was ingested.

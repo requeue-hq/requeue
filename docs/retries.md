@@ -5,6 +5,7 @@ Requeue does **not** use Cloudflare Queues. Automatic retries are the same D1 ou
 ## How a replay gets onto the outbox
 
 - `POST /v1/events/:id/replay` with `{ "enqueue": true }` sets `status = pending_replay`, `retry_count = 0`, and `next_retry_at = now`. Optional `payload` / `headers` on that request are stored on `events.delivery_payload` / `events.delivery_headers` so later cron attempts deliver the override. The ingest corpse (`events.payload`) is not rewritten.
+- `POST /v1/events/bulk-replay` takes `{ "ids": ["evt_…"] }` (1–50) and uses the same outbox write. `enqueue` defaults to `true`. It does not accept `payload` / `headers`; a queued bulk replay clears `delivery_payload` / `delivery_headers` so cron delivers the stored corpse. `"enqueue": false` delivers one id at a time and is one-shot, like a synchronous single replay.
 - `wrangler.toml` runs `* * * * *`. Each tick calls `processPendingReplays` ([`src/outbox.ts`](../src/outbox.ts)).
 - `POST /v1/internal/process-outbox` (Bearer) drains the same queue for ops/tests.
 
@@ -31,7 +32,7 @@ Soft-deleting an endpoint (`DELETE /v1/endpoints/:id`) marks that destination's 
 
 ## What is not retried automatically
 
-Synchronous `POST /v1/events/:id/replay` (no `enqueue`) is one-shot. A failure becomes `replay_failed` with no `next_retry_at`. Re-queue it with `{ "enqueue": true }` (resets `retry_count`) or call replay again.
+Synchronous `POST /v1/events/:id/replay` (no `enqueue`) is one-shot. A failure becomes `replay_failed` with no `next_retry_at`. Re-queue it with `{ "enqueue": true }` (resets `retry_count`) or call replay again. The same one-shot rule applies to each id in `POST /v1/events/bulk-replay` when `enqueue` is `false`.
 
 ## Free-tier notes
 
