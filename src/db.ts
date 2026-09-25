@@ -269,6 +269,32 @@ export async function insertReplayAttempt(db: D1Database, row: ReplayAttemptRow)
     .run();
 }
 
+export async function findEventStatus(db: D1Database, eventId: string): Promise<EventStatus | null> {
+  const row = await db
+    .prepare("SELECT status FROM events WHERE id = ?")
+    .bind(eventId)
+    .first<{ status: EventStatus }>();
+  return row?.status ?? null;
+}
+
+/** Dismiss an event. Clears the outbox schedule and any delivery override. */
+export async function markEventResolved(
+  db: D1Database,
+  eventId: string,
+  updatedAt: string,
+  note: string | null,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE events
+       SET status = 'resolved', updated_at = ?, next_retry_at = NULL,
+           delivery_payload = NULL, delivery_headers = NULL, resolve_note = ?
+       WHERE id = ?`,
+    )
+    .bind(updatedAt, note, eventId)
+    .run();
+}
+
 export async function updateEventStatus(
   db: D1Database,
   eventId: string,

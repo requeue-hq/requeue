@@ -1,4 +1,4 @@
-export type EventStatus = "failed" | "pending_replay" | "replayed" | "replay_failed";
+export type EventStatus = "failed" | "pending_replay" | "replayed" | "replay_failed" | "resolved";
 
 export type AppVariables = {
   projectId: string;
@@ -44,6 +44,8 @@ export type EventRow = {
   delivery_payload?: string | null;
   /** Outbox-only headers for the current queued replay. Never overwrites `headers`. */
   delivery_headers?: string | null;
+  /** Operator note from POST /v1/events/:id/resolve. Null until dismissed with a note. */
+  resolve_note?: string | null;
 };
 
 export type ReplayAttemptRow = {

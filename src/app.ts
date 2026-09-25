@@ -18,6 +18,7 @@ import {
   listEventsForProject,
   listReplayAttempts,
   markEventPendingReplay,
+  markEventResolved,
   softDeleteEndpoint,
   updateEndpoint,
   upsertWaitlistSignup,
@@ -33,13 +34,14 @@ import {
 } from "./ratelimit";
 import { replayEventForProject, type ReplayOverride } from "./replay";
 import { publicApiKey, publicAttempt, publicEndpoint, publicEvent, publicProject } from "./serialize";
-import type { ApiKeyRow, AppEnv, EndpointRow, EventStatus, ProjectRow } from "./types";
+import type { ApiKeyRow, AppEnv, EndpointRow, EventRow, EventStatus, ProjectRow } from "./types";
 
 const EVENT_STATUSES = new Set<EventStatus>([
   "failed",
   "pending_replay",
   "replayed",
   "replay_failed",
+  "resolved",
 ]);
 
 const ENDPOINT_ID_RE = /^ep_[0-9a-f]+$/;
@@ -48,6 +50,9 @@ const MAX_PAYLOAD_BYTES = 512 * 1024;
 
 /** One Worker turn. Callers should leave `enqueue` at its default and let cron drain. */
 export const MAX_BULK_REPLAY_IDS = 50;
+
+/** Operator note on POST /v1/events/:id/resolve. */
+export const MAX_RESOLVE_NOTE_CHARS = 500;
 
 const MAX_WAITLIST_FIELD_CHARS = 128;
 
@@ -397,6 +402,26 @@ app.post("/v1/events/bulk-replay", requireApiKey, async (c) => {
   });
 });
 
+app.post("/v1/events/bulk-resolve", requireApiKey, async (c) => {
+  const parsed = parseBulkIds(asRecord(await readJsonBody(c)));
+  if (!parsed.ok) {
+    return jsonError(c, parsed.status, parsed.code, parsed.message);
+  }
+
+  const projectId = c.get("projectId");
+  const results: BulkResolveItem[] = [];
+  for (const id of parsed.ids) {
+    results.push(await bulkResolveOne(c.env.DB, projectId, id));
+  }
+
+  const okCount = results.reduce((count, item) => count + (item.ok ? 1 : 0), 0);
+  return c.json({
+    results,
+    ok_count: okCount,
+    error_count: results.length - okCount,
+  });
+});
+
 app.get("/v1/events/:id", requireApiKey, async (c) => {
   const event = await findEventForProject(c.env.DB, c.req.param("id"), c.get("projectId"));
   if (!event) {
@@ -453,6 +478,26 @@ app.post("/v1/events/:id/replay", requireApiKey, async (c) => {
   });
 });
 
+app.post("/v1/events/:id/resolve", requireApiKey, async (c) => {
+  const event = await findEventForProject(c.env.DB, c.req.param("id"), c.get("projectId"));
+  if (!event) {
+    return jsonError(c, 404, "not_found", "Event not found");
+  }
+
+  const parsed = await parseResolveBody(c.req);
+  if (!parsed.ok) {
+    return jsonError(c, parsed.status, parsed.code, parsed.message);
+  }
+
+  if (event.status === "resolved") {
+    return c.json({ event: publicEvent(event) });
+  }
+
+  const updatedAt = nowIso();
+  await markEventResolved(c.env.DB, event.id, updatedAt, parsed.note);
+  return c.json({ event: publicEvent(resolvedEvent(event, updatedAt, parsed.note)) });
+});
+
 app.post("/v1/internal/process-outbox", requireApiKey, async (c) => {
   const result = await processPendingReplays(c.env.DB);
   return c.json({ outbox: result });
@@ -496,7 +541,11 @@ type BulkReplayParse =
   | { ok: true; ids: string[]; enqueue: boolean }
   | { ok: false; status: 400; code: string; message: string };
 
-function parseBulkReplayBody(body: Record<string, unknown> | null): BulkReplayParse {
+type BulkIdsParse =
+  | { ok: true; ids: string[] }
+  | { ok: false; status: 400; code: string; message: string };
+
+function parseBulkIds(body: Record<string, unknown> | null): BulkIdsParse {
   if (!body) {
     return { ok: false, status: 400, code: "invalid_body", message: "JSON object body required" };
   }
@@ -541,6 +590,17 @@ function parseBulkReplayBody(body: Record<string, unknown> | null): BulkReplayPa
     ids.push(id);
   }
 
+  return { ok: true, ids };
+}
+
+function parseBulkReplayBody(body: Record<string, unknown> | null): BulkReplayParse {
+  const parsed = parseBulkIds(body);
+  if (!parsed.ok) return parsed;
+  if (!body) {
+    return { ok: false, status: 400, code: "invalid_body", message: "JSON object body required" };
+  }
+
+  const ids = parsed.ids;
   let enqueue = true;
   if (hasOwn(body, "enqueue")) {
     if (typeof body.enqueue !== "boolean") {
@@ -622,6 +682,98 @@ async function bulkReplayOne(
     }
     throw err;
   }
+}
+
+type BulkResolveSuccess = {
+  id: string;
+  ok: true;
+  event: ReturnType<typeof publicEvent>;
+};
+
+type BulkResolveFailure = {
+  id: string;
+  ok: false;
+  error: { code: string; message: string };
+};
+
+type BulkResolveItem = BulkResolveSuccess | BulkResolveFailure;
+
+async function bulkResolveOne(
+  db: D1Database,
+  projectId: string,
+  eventId: string,
+): Promise<BulkResolveItem> {
+  const event = await findEventForProject(db, eventId, projectId);
+  if (!event) {
+    return {
+      id: eventId,
+      ok: false,
+      error: { code: "not_found", message: "Event not found" },
+    };
+  }
+
+  if (event.status === "resolved") {
+    return { id: event.id, ok: true, event: publicEvent(event) };
+  }
+
+  const updatedAt = nowIso();
+  await markEventResolved(db, event.id, updatedAt, null);
+  return {
+    id: event.id,
+    ok: true,
+    event: publicEvent(resolvedEvent(event, updatedAt, null)),
+  };
+}
+
+type ResolveBodyParse =
+  | { ok: true; note: string | null }
+  | { ok: false; status: 400; code: string; message: string };
+
+async function parseResolveBody(req: { text: () => Promise<string> }): Promise<ResolveBodyParse> {
+  const text = await req.text();
+  if (!text.trim()) return { ok: true, note: null };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, status: 400, code: "invalid_json", message: "Request body must be JSON" };
+  }
+
+  const body = asRecord(parsed);
+  if (!body) {
+    return { ok: false, status: 400, code: "invalid_body", message: "JSON object body required" };
+  }
+  if (!hasOwn(body, "note") || body.note === null) {
+    return { ok: true, note: null };
+  }
+  if (typeof body.note !== "string") {
+    return { ok: false, status: 400, code: "invalid_body", message: "note must be a string" };
+  }
+
+  const note = body.note.trim();
+  if (!note) return { ok: true, note: null };
+  if (note.length > MAX_RESOLVE_NOTE_CHARS) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_body",
+      message: `note must be at most ${MAX_RESOLVE_NOTE_CHARS} characters`,
+    };
+  }
+  return { ok: true, note };
+}
+
+function resolvedEvent(event: EventRow, updatedAt: string, note: string | null): EventRow {
+  return {
+    ...event,
+    status: "resolved",
+    updated_at: updatedAt,
+    next_retry_at: null,
+    delivery_payload: null,
+    delivery_headers: null,
+    resolve_note: note,
+  };
 }
 
 type ReplayOverrideParse =
