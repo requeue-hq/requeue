@@ -1,4 +1,6 @@
-name = "requeue"
+# api.getrequeue.com (the hosted API) is bound to this Worker script name.
+# Do not rename without moving the custom domain.
+name = "requeue-api"
 main = "src/index.ts"
 compatibility_date = "2026-09-04"
 
