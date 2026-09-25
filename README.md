@@ -286,11 +286,13 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | `GET` | `/v1/events/:id` | Bearer | Event + replay attempts |
 | `POST` | `/v1/events/:id/replay` | Bearer | Deliver now, or `{ enqueue, payload?, headers? }` (override is this delivery only) |
 | `POST` | `/v1/events/bulk-replay` | Bearer | Redeliver up to 50 ids (`enqueue` defaults true; no payload override) |
+| `POST` | `/v1/events/:id/resolve` | Bearer | Dismiss an event (`resolved`); optional `{ "note" }`; no replay |
+| `POST` | `/v1/events/bulk-resolve` | Bearer | Dismiss up to 50 ids (no replay) |
 | `GET` | `/v1/billing` | Bearer | Billing stub |
 
 See [API keys](#api-keys).
 
-Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored) and combines with `status` and `endpoint_id`.
+Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`, `resolved`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored) and combines with `status` and `endpoint_id`. `resolved` is a dismiss: the row stays in the inbox and is not delivered.
 
 `GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key` and `has_secret`, never the HMAC `secret`.
 
@@ -300,7 +302,7 @@ Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`. Optiona
 
 `POST /v1/ingest/:endpointKey` is limited to **60 requests per minute per endpoint** (fixed 60s D1 window). Override with Worker binding `INGEST_RATE_LIMIT`. Over-limit requests return `429` with `error.code: "rate_limited"` and `Retry-After`.
 
-Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Bulk replay defaults to the outbox; see [Bulk replay](#bulk-replay). Details: [docs/retries.md](docs/retries.md). Hosted curls for filters, queued replay, bulk replay, edit-before-replay, and PATCH/DELETE: [docs/quickstart.md](docs/quickstart.md).
+Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Bulk replay defaults to the outbox; see [Bulk replay](#bulk-replay). Dismiss without a delivery: [Resolve](#resolve). Details: [docs/retries.md](docs/retries.md). Hosted curls for filters, queued replay, bulk replay, resolve, edit-before-replay, and PATCH/DELETE: [docs/quickstart.md](docs/quickstart.md).
 
 ### Bulk replay
 
@@ -343,6 +345,51 @@ A well-formed batch returns `200` even when some ids fail. Missing ids and ids f
 
 Each success uses the single-event path: HMAC over the delivered body when the endpoint has a `secret`, a `replay_attempts` row on synchronous delivery, and `pending_replay` / `retry_count = 0` / `next_retry_at` when queued. Queued bulk replay clears any previous `delivery_payload` / `delivery_headers`, so cron POSTs the stored corpse. A synchronous upstream failure is still `ok: true` with `attempt.success: false` and `event.status: "replay_failed"` — the same 200-plus-attempt shape as one event. `enqueue: false` is one-shot per id (no backoff).
 
+### Resolve
+
+`POST /v1/events/:id/resolve` dismisses an event. Same Bearer key as replay. It does **not** POST to `target_url` and does **not** write a `replay_attempts` row. Use this after you fixed the failure upstream and want it out of the failed inbox.
+
+```json
+{ "note": "fixed in the orders worker" }
+```
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `note` | omitted | Optional. A string of at most 500 characters, stored on `events.resolve_note` and returned on the event. Blank or null stores `null` |
+
+The event status becomes `resolved`. `next_retry_at`, `delivery_payload`, and `delivery_headers` are cleared so a queued replay is taken off the D1 outbox and cron will not deliver it. `retry_count` is left as history. The ingest corpse (`payload` / `headers`) is unchanged.
+
+Calling resolve on an event that is already `resolved` returns `200` with that event and does not change `resolve_note` or `updated_at`. An id from another project is `404` `not_found`, same as replay.
+
+`POST /v1/events/bulk-resolve` dismisses many events for the caller's project:
+
+```json
+{ "ids": ["evt_one", "evt_two"] }
+```
+
+`ids` is 1–50 event ids. Empty, missing, or more than 50 is `400` (`invalid_body` or `too_many_ids`) and nothing is resolved — the same errors as [bulk replay](#bulk-replay). A well-formed batch returns `200` with per-item `results`, `ok_count`, and `error_count`. Missing ids and ids from another project are per-item `not_found`; the rest still resolve. Results stay in request order. Bulk resolve does not take a `note` (each success stores `resolve_note: null` unless the event was already resolved).
+
+```json
+{
+  "results": [
+    {
+      "id": "evt_one",
+      "ok": true,
+      "event": { "id": "evt_one", "status": "resolved", "resolve_note": null }
+    },
+    {
+      "id": "evt_missing",
+      "ok": false,
+      "error": { "code": "not_found", "message": "Event not found" }
+    }
+  ],
+  "ok_count": 1,
+  "error_count": 1
+}
+```
+
+`GET /v1/events?status=resolved` lists dismissed events. A later `POST /v1/events/:id/replay` can still deliver a resolved event if you want it back on the wire.
+
 ### Edit before replay
 
 `POST /v1/events/:id/replay` may include an optional JSON body. Empty body and `{ "enqueue": true }` stay backward compatible.
@@ -382,7 +429,7 @@ If `payload` is omitted, the raw request body is stored as the failure payload. 
 
 ## Schema
 
-Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`), ingest rate-limit windows and replay backoff columns (`0003`), the marketing waitlist (`0004`), endpoint soft-delete (`0005`, `endpoints.deleted_at`), and replay delivery overrides (`0006`, `events.delivery_payload` / `delivery_headers`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
+Schema lives in [`migrations/0001_init.sql`](migrations/0001_init.sql). Later migrations add demo-key revoke (`0002`), ingest rate-limit windows and replay backoff columns (`0003`), the marketing waitlist (`0004`), endpoint soft-delete (`0005`, `endpoints.deleted_at`), replay delivery overrides (`0006`, `events.delivery_payload` / `delivery_headers`), and dismiss-without-replay (`0007`, status `resolved` plus `events.resolve_note`). The local demo tenant is [`scripts/seed-local.sql`](scripts/seed-local.sql) only.
 
 | Table | Role |
 | --- | --- |

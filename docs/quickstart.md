@@ -86,6 +86,30 @@ curl -sS -X POST "$REQUEUE_API/v1/events/bulk-replay" \
 
 Response: `results` (one entry per id, same order), plus `ok_count` and `error_count`. A success entry is `{ "id", "ok": true, "event", "attempt", "queued" }` (`attempt` is `null` when queued). A failure entry is `{ "id", "ok": false, "error": { "code", "message" } }`. Pass `"enqueue": false` to POST each id immediately. Contract: [README — Bulk replay](../README.md#bulk-replay).
 
+## Resolve
+
+Dismiss a failure without replaying it (you already fixed it upstream). Status becomes `resolved`. A queued event is taken off the outbox (`next_retry_at` and any delivery override are cleared) so cron does not POST it. Optional `note` is stored on the event (500 characters max).
+
+```bash
+curl -sS -X POST "$REQUEUE_API/v1/events/evt_REPLACE_ME/resolve" \
+  -H "Authorization: Bearer $REQUEUE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"note":"fixed in the orders worker"}'
+```
+
+Already `resolved` returns `200` with the same event. List dismissed rows with `GET /v1/events?status=resolved`.
+
+Dismiss many at once (1–50 ids, same empty / over-cap errors as bulk replay). Missing ids are per-item errors; the rest still resolve. No `note` on this route.
+
+```bash
+curl -sS -X POST "$REQUEUE_API/v1/events/bulk-resolve" \
+  -H "Authorization: Bearer $REQUEUE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"ids":["evt_ONE","evt_TWO"]}'
+```
+
+Contract: [README — Resolve](../README.md#resolve).
+
 ## Edit before replay
 
 Fix a typo or stale field for **this delivery only**. The inbox row stays the original corpse — `GET /v1/events/:id` still shows what was ingested.
@@ -104,7 +128,7 @@ Omit `payload` to keep the stored body. Omit `headers` to keep the stored ingest
 
 ## Filter the inbox
 
-`GET /v1/events` accepts `?status=` (`failed`, `pending_replay`, `replayed`, `replay_failed`) and `?endpoint_id=` (an `ep_…` id). Combine them to inspect one destination. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored).
+`GET /v1/events` accepts `?status=` (`failed`, `pending_replay`, `replayed`, `replay_failed`, `resolved`) and `?endpoint_id=` (an `ep_…` id). Combine them to inspect one destination. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored).
 
 ```bash
 curl -sS "$REQUEUE_API/v1/events?status=failed&endpoint_id=ep_REPLACE_ME&q=ord_123" \

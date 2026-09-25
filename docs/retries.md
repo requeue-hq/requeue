@@ -30,10 +30,12 @@ A successful outbox (or manual) delivery sets `status = replayed` and clears `ne
 
 Soft-deleting an endpoint (`DELETE /v1/endpoints/:id`) marks that destination's `pending_replay` events `replay_failed` and clears `next_retry_at`, so cron does not keep POSTing to a retired URL.
 
+`POST /v1/events/:id/resolve` and `POST /v1/events/bulk-resolve` set `status = resolved` and clear `next_retry_at` plus `delivery_payload` / `delivery_headers`. That row is no longer eligible. If cron already selected it, the outbox re-reads status and skips the POST. `retry_count` is kept. Contract: [README — Resolve](../README.md#resolve).
+
 ## What is not retried automatically
 
 Synchronous `POST /v1/events/:id/replay` (no `enqueue`) is one-shot. A failure becomes `replay_failed` with no `next_retry_at`. Re-queue it with `{ "enqueue": true }` (resets `retry_count`) or call replay again. The same one-shot rule applies to each id in `POST /v1/events/bulk-replay` when `enqueue` is `false`.
 
 ## Free-tier notes
 
-Backoff lives on `events.retry_count` / `events.next_retry_at` ([`migrations/0003_ingest_limits_and_replay_backoff.sql`](../migrations/0003_ingest_limits_and_replay_backoff.sql)). Delivery overrides live on `events.delivery_payload` / `events.delivery_headers` ([`migrations/0006_replay_delivery_override.sql`](../migrations/0006_replay_delivery_override.sql)). No KV, Queues, or Durable Objects.
+Backoff lives on `events.retry_count` / `events.next_retry_at` ([`migrations/0003_ingest_limits_and_replay_backoff.sql`](../migrations/0003_ingest_limits_and_replay_backoff.sql)). Delivery overrides live on `events.delivery_payload` / `events.delivery_headers` ([`migrations/0006_replay_delivery_override.sql`](../migrations/0006_replay_delivery_override.sql)). Dismissals use status `resolved` and optional `events.resolve_note` ([`migrations/0007_event_resolved.sql`](../migrations/0007_event_resolved.sql)). No KV, Queues, or Durable Objects.

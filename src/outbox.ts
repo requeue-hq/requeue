@@ -1,4 +1,4 @@
-import { listPendingReplayEvents, updateEventReplaySchedule } from "./db";
+import { findEventStatus, listPendingReplayEvents, updateEventReplaySchedule } from "./db";
 import { ApiError } from "./errors";
 import { nowIso } from "./json";
 import { replayEventUnscoped, replayOverrideFromEvent } from "./replay";
@@ -25,8 +25,17 @@ export async function processPendingReplays(
   const pending = await listPendingReplayEvents(db, limit, now);
   let succeeded = 0;
   let failed = 0;
+  let skipped = 0;
 
   for (const event of pending) {
+    // Resolve can land between the outbox SELECT and this delivery. Do not POST
+    // a row that is no longer pending_replay.
+    const status = await findEventStatus(db, event.id);
+    if (status !== "pending_replay") {
+      skipped += 1;
+      continue;
+    }
+
     try {
       const result = await replayEventUnscoped(db, event, replayOverrideFromEvent(event));
       if (result.attempt.success) {
@@ -57,5 +66,5 @@ export async function processPendingReplays(
     }
   }
 
-  return { processed: pending.length, succeeded, failed };
+  return { processed: pending.length - skipped, succeeded, failed };
 }
