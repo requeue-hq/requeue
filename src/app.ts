@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { scheduleIngestAlert } from "./alert";
 import { bearerToken, requireApiKey, resolveApiKey } from "./auth";
 import { newApiKeyToken, newId, secretsMatch, sha256Hex } from "./crypto";
 import {
@@ -229,6 +230,11 @@ app.post("/v1/endpoints", requireApiKey, async (c) => {
     return jsonError(c, 400, "invalid_target_url", "target_url must be an http(s) URL");
   }
 
+  const alert = parseAlertUrl(body);
+  if (!alert.ok) {
+    return jsonError(c, 400, "invalid_body", alert.message);
+  }
+
   const name = asString(body.name) || hostnameOf(targetUrl);
   const secret = asString(body.secret);
   const createdAt = nowIso();
@@ -239,6 +245,7 @@ app.post("/v1/endpoints", requireApiKey, async (c) => {
     endpoint_key: newId("epk", 18),
     target_url: targetUrl,
     secret: secret || null,
+    alert_url: alert.present ? alert.value : null,
     created_at: createdAt,
     deleted_at: null,
   };
@@ -283,6 +290,7 @@ app.patch("/v1/endpoints/:id", requireApiKey, async (c) => {
     name: patched.row.name,
     target_url: patched.row.target_url,
     secret: patched.row.secret,
+    alert_url: patched.row.alert_url,
   });
 
   return c.json({ endpoint: publicEndpoint(patched.row) });
@@ -351,6 +359,16 @@ app.post("/v1/ingest/:endpointKey", async (c) => {
   };
 
   await insertEvent(c.env.DB, event);
+  if (endpoint.alert_url) {
+    scheduleIngestAlert(readExecutionCtx(c), endpoint.alert_url, {
+      id: event.id,
+      endpoint_id: event.endpoint_id,
+      status: event.status,
+      reason: event.reason,
+      source: event.source,
+      created_at: event.created_at,
+    });
+  }
   return c.json({ event: publicEvent(event) }, 201);
 });
 
@@ -894,7 +912,61 @@ function applyEndpointPatch(
     }
   }
 
+  if (hasOwn(body, "alert_url")) {
+    const alert = parseAlertUrl(body);
+    if (!alert.ok) {
+      return { ok: false, code: "invalid_body", message: alert.message };
+    }
+    if (alert.present) next.alert_url = alert.value;
+  }
+
   return { ok: true, row: next };
+}
+
+type AlertUrlParse =
+  | { ok: true; present: false }
+  | { ok: true; present: true; value: string | null }
+  | { ok: false; message: string };
+
+/** Omit leaves the field alone. null or "" clears. Any other value must be absolute https. */
+function parseAlertUrl(body: Record<string, unknown>): AlertUrlParse {
+  if (!hasOwn(body, "alert_url")) {
+    return { ok: true, present: false };
+  }
+  const raw = body.alert_url;
+  if (raw === null) {
+    return { ok: true, present: true, value: null };
+  }
+  if (typeof raw !== "string") {
+    return { ok: false, message: "alert_url must be an absolute https URL" };
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { ok: true, present: true, value: null };
+  }
+  if (!isHttpsUrl(trimmed)) {
+    return { ok: false, message: "alert_url must be an absolute https URL" };
+  }
+  return { ok: true, present: true, value: trimmed };
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname !== "";
+  } catch {
+    return false;
+  }
+}
+
+function readExecutionCtx(c: {
+  executionCtx: { waitUntil(promise: Promise<unknown>): void };
+}): { waitUntil(promise: Promise<unknown>): void } | undefined {
+  try {
+    return c.executionCtx;
+  } catch {
+    return undefined;
+  }
 }
 
 function isHttpUrl(value: string): boolean {
