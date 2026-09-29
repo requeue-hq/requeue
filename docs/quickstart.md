@@ -30,9 +30,12 @@ curl -sS "$REQUEUE_API/v1/endpoints" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Orders worker",
-    "target_url": "https://httpbin.org/post"
+    "target_url": "https://httpbin.org/post",
+    "alert_url": "https://example.com/hooks/requeue-alerts"
   }'
 ```
+
+`alert_url` is optional. When it is an absolute `https://` URL, each stored failure also POSTs a small `event.ingested` notification there (no payload, no retry). `http://` and relative URLs are rejected. `PATCH` with `null` or `""` clears it.
 
 ## 4. Ingest a failure
 
@@ -157,7 +160,7 @@ curl -sS -X DELETE "$REQUEUE_API/v1/endpoints/ep_REPLACE_ME" \
   -H "Authorization: Bearer $REQUEUE_KEY"
 ```
 
-`PATCH` is partial: omitted fields stay as-is. You can also set `secret` (or `""` / `null` to clear it). `endpoint_key` / ingest path do **not** rotate — existing workers keep posting to the same URL.
+`PATCH` is partial: omitted fields stay as-is. You can also set `secret` (or `""` / `null` to clear it) and `alert_url` (or `""` / `null` to clear it). `endpoint_key` / ingest path do **not** rotate — existing workers keep posting to the same URL.
 
 `DELETE` is a soft-delete (`deleted_at`). Historical events stay. List/get hide the row. Ingest for that key returns `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination become `replay_failed`.
 

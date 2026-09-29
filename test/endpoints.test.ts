@@ -14,6 +14,7 @@ type PublicEndpoint = {
   target_url: string;
   ingest_path: string;
   has_secret: boolean;
+  alert_url: string | null;
   created_at: string;
   secret?: string;
 };
@@ -402,5 +403,136 @@ describe("DELETE /v1/endpoints/:id", () => {
 
     const still = await app.request(`/v1/endpoints/${createdBody.endpoint.id}`, { headers: AUTH }, env);
     expect(still.status).toBe(200);
+  });
+});
+
+describe("alert_url", () => {
+  it("creates, lists, and gets alert_url without changing the ingest path", async () => {
+    const created = await createEndpoint({
+      name: "Alert target",
+      target_url: "https://example.com/hooks/orders",
+      alert_url: "https://alerts.example/hooks/requeue",
+    });
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as { endpoint: PublicEndpoint };
+    expect(createdBody.endpoint.alert_url).toBe("https://alerts.example/hooks/requeue");
+    expect(createdBody.endpoint.ingest_path).toBe(`/v1/ingest/${createdBody.endpoint.endpoint_key}`);
+
+    const omitted = await createEndpoint({
+      name: "No alert",
+      target_url: "https://example.com/hooks/quiet",
+    });
+    expect(omitted.status).toBe(201);
+    const omittedBody = (await omitted.json()) as { endpoint: PublicEndpoint };
+    expect(omittedBody.endpoint.alert_url).toBeNull();
+
+    const listed = await app.request("/v1/endpoints", { headers: AUTH }, env);
+    expect(listed.status).toBe(200);
+    const listedBody = (await listed.json()) as { endpoints: PublicEndpoint[] };
+    expect(listedBody.endpoints.find((row) => row.id === createdBody.endpoint.id)?.alert_url).toBe(
+      "https://alerts.example/hooks/requeue",
+    );
+    expect(listedBody.endpoints.find((row) => row.id === omittedBody.endpoint.id)?.alert_url).toBeNull();
+
+    const detail = await app.request(`/v1/endpoints/${createdBody.endpoint.id}`, { headers: AUTH }, env);
+    expect(detail.status).toBe(200);
+    const detailBody = (await detail.json()) as { endpoint: PublicEndpoint };
+    expect(detailBody.endpoint.alert_url).toBe("https://alerts.example/hooks/requeue");
+    expect(detailBody.endpoint.endpoint_key).toBe(createdBody.endpoint.endpoint_key);
+  });
+
+  it("rejects non-https alert_url on create and patch", async () => {
+    const http = await createEndpoint({
+      name: "Http alert",
+      target_url: "https://example.com/hooks/orders",
+      alert_url: "http://alerts.example/hooks/requeue",
+    });
+    expect(http.status).toBe(400);
+    await expect(http.json()).resolves.toMatchObject({ error: { code: "invalid_body" } });
+
+    const relative = await createEndpoint({
+      name: "Relative alert",
+      target_url: "https://example.com/hooks/orders",
+      alert_url: "/hooks/requeue",
+    });
+    expect(relative.status).toBe(400);
+    await expect(relative.json()).resolves.toMatchObject({ error: { code: "invalid_body" } });
+
+    const bare = await createEndpoint({
+      name: "Bare alert",
+      target_url: "https://example.com/hooks/orders",
+      alert_url: "alerts.example/hooks/requeue",
+    });
+    expect(bare.status).toBe(400);
+    await expect(bare.json()).resolves.toMatchObject({ error: { code: "invalid_body" } });
+
+    const created = await createEndpoint({
+      name: "Keep alert",
+      target_url: "https://example.com/hooks/orders",
+      alert_url: "https://alerts.example/hooks/requeue",
+    });
+    const createdBody = (await created.json()) as { endpoint: PublicEndpoint };
+
+    const patched = await patchEndpoint(createdBody.endpoint.id, {
+      alert_url: "http://alerts.example/hooks/requeue",
+    });
+    expect(patched.status).toBe(400);
+    await expect(patched.json()).resolves.toMatchObject({ error: { code: "invalid_body" } });
+
+    const notString = await patchEndpoint(createdBody.endpoint.id, { alert_url: 12 });
+    expect(notString.status).toBe(400);
+    await expect(notString.json()).resolves.toMatchObject({ error: { code: "invalid_body" } });
+
+    const detail = await app.request(`/v1/endpoints/${createdBody.endpoint.id}`, { headers: AUTH }, env);
+    const detailBody = (await detail.json()) as { endpoint: PublicEndpoint };
+    expect(detailBody.endpoint.alert_url).toBe("https://alerts.example/hooks/requeue");
+    expect(detailBody.endpoint.endpoint_key).toBe(createdBody.endpoint.endpoint_key);
+  });
+
+  it("clears alert_url with null or an empty string and leaves it when omitted", async () => {
+    const created = await createEndpoint({
+      name: "Clear alert",
+      target_url: "https://example.com/hooks/orders",
+      secret: "hook-secret",
+      alert_url: "https://alerts.example/hooks/requeue",
+    });
+    const createdBody = (await created.json()) as { endpoint: PublicEndpoint };
+    const originalKey = createdBody.endpoint.endpoint_key;
+
+    const clearedNull = await patchEndpoint(createdBody.endpoint.id, { alert_url: null });
+    expect(clearedNull.status).toBe(200);
+    const clearedNullBody = (await clearedNull.json()) as { endpoint: PublicEndpoint };
+    expect(clearedNullBody.endpoint.alert_url).toBeNull();
+    expect(clearedNullBody.endpoint.endpoint_key).toBe(originalKey);
+    expect(clearedNullBody.endpoint.has_secret).toBe(true);
+    expect(clearedNullBody.endpoint.secret).toBeUndefined();
+
+    const restored = await patchEndpoint(createdBody.endpoint.id, {
+      alert_url: "  https://alerts.example/hooks/again  ",
+    });
+    expect(restored.status).toBe(200);
+    await expect(restored.json()).resolves.toMatchObject({
+      endpoint: { alert_url: "https://alerts.example/hooks/again", endpoint_key: originalKey },
+    });
+
+    const nameOnly = await patchEndpoint(createdBody.endpoint.id, { name: "Clear alert renamed" });
+    expect(nameOnly.status).toBe(200);
+    await expect(nameOnly.json()).resolves.toMatchObject({
+      endpoint: {
+        name: "Clear alert renamed",
+        alert_url: "https://alerts.example/hooks/again",
+        endpoint_key: originalKey,
+      },
+    });
+
+    const clearedEmpty = await patchEndpoint(createdBody.endpoint.id, { alert_url: "" });
+    expect(clearedEmpty.status).toBe(200);
+    const clearedEmptyBody = (await clearedEmpty.json()) as { endpoint: PublicEndpoint };
+    expect(clearedEmptyBody.endpoint.alert_url).toBeNull();
+    expect(clearedEmptyBody.endpoint.endpoint_key).toBe(originalKey);
+
+    const detail = await app.request(`/v1/endpoints/${createdBody.endpoint.id}`, { headers: AUTH }, env);
+    const detailBody = (await detail.json()) as { endpoint: PublicEndpoint };
+    expect(detailBody.endpoint.alert_url).toBeNull();
   });
 });

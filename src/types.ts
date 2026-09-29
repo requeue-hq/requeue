@@ -23,6 +23,8 @@ export type EndpointRow = {
   endpoint_key: string;
   target_url: string;
   secret: string | null;
+  /** Absolute https URL notified after ingest stores a failure. Null means no alert. */
+  alert_url: string | null;
   created_at: string;
   deleted_at: string | null;
 };

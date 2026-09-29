@@ -31,9 +31,11 @@ Retries and the D1 outbox: [retries.md](retries.md). Immediate vs queued replay:
 
 Same Bearer key as create. Hosted curls: [quickstart.md](quickstart.md).
 
-- `GET /v1/endpoints` / `GET /v1/endpoints/:id` — list or fetch one (no raw `secret`; `has_secret` only).
-- `PATCH /v1/endpoints/:id` — partial `name`, `target_url`, and/or `secret`. Empty/`null` secret clears HMAC. The ingest key (`epk_…`) stays put so you do not redeploy workers.
-- `DELETE /v1/endpoints/:id` — soft-delete. Inbox history stays. Further ingest returns `410` with `error.code: "endpoint_gone"`. Queued outbox replays for that destination are marked `replay_failed`.
+- `GET /v1/endpoints` / `GET /v1/endpoints/:id` — list or fetch one (no raw `secret`; `has_secret` and `alert_url`).
+- `PATCH /v1/endpoints/:id` — partial `name`, `target_url`, `secret`, and/or `alert_url`. Empty/`null` secret clears HMAC. Empty/`null` `alert_url` clears the notification URL. The ingest key (`epk_…`) stays put so you do not redeploy workers.
+- `DELETE /v1/endpoints/:id` — soft-delete. Inbox history stays. Further ingest returns `410` with `error.code: "endpoint_gone"` and does not alert. Queued outbox replays for that destination are marked `replay_failed`.
+
+Optional `alert_url` must be `https://`. After a failure is stored, Requeue POSTs `{ "type": "event.ingested", "event": { id, endpoint_id, status, reason, source, created_at } }` once. The payload stays in the inbox. A failed alert does not fail ingest.
 
 Contract: [README HTTP API](../README.md#http-api).
 

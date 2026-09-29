@@ -62,8 +62,8 @@ export async function insertEndpoint(
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO endpoints (id, project_id, name, endpoint_key, target_url, secret, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO endpoints (id, project_id, name, endpoint_key, target_url, secret, alert_url, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       row.id,
@@ -72,6 +72,7 @@ export async function insertEndpoint(
       row.endpoint_key,
       row.target_url,
       row.secret,
+      row.alert_url,
       row.created_at,
     )
     .run();
@@ -112,15 +113,15 @@ export async function updateEndpoint(
   db: D1Database,
   endpointId: string,
   projectId: string,
-  fields: { name: string; target_url: string; secret: string | null },
+  fields: { name: string; target_url: string; secret: string | null; alert_url: string | null },
 ): Promise<void> {
   await db
     .prepare(
       `UPDATE endpoints
-       SET name = ?, target_url = ?, secret = ?
+       SET name = ?, target_url = ?, secret = ?, alert_url = ?
        WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
     )
-    .bind(fields.name, fields.target_url, fields.secret, endpointId, projectId)
+    .bind(fields.name, fields.target_url, fields.secret, fields.alert_url, endpointId, projectId)
     .run();
 }
 

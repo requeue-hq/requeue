@@ -58,7 +58,8 @@ curl -sS http://127.0.0.1:8787/v1/endpoints \
   -d '{
     "name": "Orders worker",
     "target_url": "https://httpbin.org/post",
-    "secret": "optional-hmac-secret"
+    "secret": "optional-hmac-secret",
+    "alert_url": "https://example.com/hooks/requeue-alerts"
   }'
 
 curl -sS http://127.0.0.1:8787/v1/ingest/epk_REPLACE_ME \
@@ -86,7 +87,7 @@ curl -sS -X POST http://127.0.0.1:8787/v1/events/bulk-replay \
 
 Bulk replay defaults to `{"enqueue": true}` (D1 outbox, up to 50 ids). Pass `"enqueue": false` to deliver each id immediately. Payload edits stay on the single-event replay route.
 
-Note `endpoint.id` and `endpoint.endpoint_key` from the create-endpoint response, then substitute `ep_REPLACE_ME` / `epk_REPLACE_ME` / `evt_REPLACE_ME`. Optional `q` on that list call searches the event id, reason, source, and payload (case-insensitive) — `q=ord_123` matches the sample above.
+Note `endpoint.id` and `endpoint.endpoint_key` from the create-endpoint response, then substitute `ep_REPLACE_ME` / `epk_REPLACE_ME` / `evt_REPLACE_ME`. `secret` and `alert_url` are optional; drop `alert_url` if you do not want a notification. Optional `q` on that list call searches the event id, reason, source, and payload (case-insensitive) — `q=ord_123` matches the sample above.
 
 The dashboard at [getrequeue.com/app](https://getrequeue.com/app) is client-only. Point it at `http://127.0.0.1:8787` and paste the local seed key to inspect and replay without curl.
 
@@ -162,7 +163,8 @@ curl -sS https://api.getrequeue.com/v1/endpoints \
   -d '{
     "name": "Orders worker",
     "target_url": "https://httpbin.org/post",
-    "secret": "optional-hmac-secret"
+    "secret": "optional-hmac-secret",
+    "alert_url": "https://example.com/hooks/requeue-alerts"
   }'
 ```
 
@@ -276,10 +278,10 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | `POST` | `/v1/api-keys` | bootstrap secret or Bearer | Mint a management key (bootstrap also creates a project) |
 | `GET` | `/v1/api-keys` | Bearer | List keys for the current project |
 | `DELETE` | `/v1/api-keys/:id` | Bearer | Revoke a key |
-| `POST` | `/v1/endpoints` | Bearer | Create an endpoint (`target_url`, optional `secret`) |
-| `GET` | `/v1/endpoints` | Bearer | List project endpoints (no raw `secret`; `has_secret` only) |
+| `POST` | `/v1/endpoints` | Bearer | Create an endpoint (`target_url`, optional `secret`, optional `alert_url`) |
+| `GET` | `/v1/endpoints` | Bearer | List project endpoints (no raw `secret`; `has_secret` and `alert_url`) |
 | `GET` | `/v1/endpoints/:id` | Bearer | Fetch one project endpoint |
-| `PATCH` | `/v1/endpoints/:id` | Bearer | Update `name`, `target_url`, and/or `secret` (ingest path stays put) |
+| `PATCH` | `/v1/endpoints/:id` | Bearer | Update `name`, `target_url`, `secret`, and/or `alert_url` (ingest path stays put) |
 | `DELETE` | `/v1/endpoints/:id` | Bearer | Soft-delete; ingest returns `410 endpoint_gone` |
 | `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60 ingest/min/endpoint; `429` when exceeded) |
 | `GET` | `/v1/events` | Bearer | List events; `?status=` + `?endpoint_id=` + `?q=` + `?limit=` |
@@ -294,9 +296,27 @@ See [API keys](#api-keys).
 
 Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`, `resolved`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored) and combines with `status` and `endpoint_id`. `resolved` is a dismiss: the row stays in the inbox and is not delivered.
 
-`GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key` and `has_secret`, never the HMAC `secret`.
+`GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key`, `has_secret`, and `alert_url` (or null). They never include the HMAC `secret`.
 
-`PATCH /v1/endpoints/:id` is partial. Omitted fields stay as-is. `secret: ""` or `secret: null` clears the HMAC secret (same as create treating an empty value as no secret). `endpoint_key` / `ingest_path` are not rotated. `DELETE` sets `endpoints.deleted_at` so historical events remain (`events.endpoint_id` is `ON DELETE CASCADE`). List/get omit deleted rows; ingest for that key returns `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination are marked `replay_failed`.
+`PATCH /v1/endpoints/:id` is partial. Omitted fields stay as-is. `secret: ""` or `secret: null` clears the HMAC secret (same as create treating an empty value as no secret). `alert_url: ""` or `alert_url: null` clears the notification URL the same way. `endpoint_key` / `ingest_path` are not rotated. `DELETE` sets `endpoints.deleted_at` so historical events remain (`events.endpoint_id` is `ON DELETE CASCADE`). List/get omit deleted rows; ingest for that key returns `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination are marked `replay_failed`. A deleted endpoint is not ingested, so it does not alert.
+
+`alert_url`, when set, must be an absolute `https://` URL. `http://` and relative URLs are `400` with `error.code: "invalid_body"`. After ingest writes the failed event, Requeue schedules one background POST (`waitUntil`, a few seconds, no retry) to that URL:
+
+```json
+{
+  "type": "event.ingested",
+  "event": {
+    "id": "evt_…",
+    "endpoint_id": "ep_…",
+    "status": "failed",
+    "reason": "fulfillment timeout",
+    "source": "worker",
+    "created_at": "2026-09-29T00:00:00.000Z"
+  }
+}
+```
+
+The alert does not include the payload or headers (`GET /v1/events/:id` does). Network errors and non-2xx responses are ignored. Ingest still returns the stored event.
 
 `POST /v1/waitlist` is unauthenticated. CORS allows `https://getrequeue.com` and `https://www.getrequeue.com` so the marketing site can `fetch` it. Light rate limit: **10 requests per minute per client IP** (`WAITLIST_RATE_LIMIT`). See [docs/waitlist.md](docs/waitlist.md).
 
