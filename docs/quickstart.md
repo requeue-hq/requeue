@@ -51,6 +51,34 @@ curl -sS "$REQUEUE_API/v1/ingest/epk_REPLACE_ME" \
   }'
 ```
 
+## Relay a Stripe (or Clerk) webhook
+
+Ingest is for workers you control. Stripe and Clerk will not POST their failures to it. Point the provider's webhook URL at relay instead. `target_url` stays your app.
+
+```bash
+curl -sS "$REQUEUE_API/v1/endpoints" \
+  -H "Authorization: Bearer $REQUEUE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Stripe",
+    "target_url": "https://yourapp.com/webhooks/stripe",
+    "secret": "optional-requeue-replay-secret",
+    "alert_url": "https://yourapp.com/hooks/requeue-alerts"
+  }'
+```
+
+In the Stripe Dashboard, set the endpoint URL to:
+
+```text
+https://api.getrequeue.com/v1/relay/epk_REPLACE_ME
+```
+
+Use the `endpoint_key` from the create response (`relay_path` is the same path). Clerk and other Svix senders use that same URL.
+
+Requeue forwards the raw body and the provider signature headers (`Stripe-Signature`, or `svix-id` / `svix-timestamp` / `svix-signature`) to `target_url`. When your app returns 2xx, Stripe sees that status and body, and Requeue does not store the event. When your app errors, times out (10s), or cannot be reached, Requeue stores the raw payload (`source: "relay"`, status `failed`) and answers **200** so Stripe stops retrying. Replay it from the inbox. `alert_url` fires on that capture.
+
+Provider signatures expire. Stripe's default tolerance is 5 minutes, so a replay later than that can fail your app's `Stripe-Signature` check. For that delivery, pass a `headers` override on `POST /v1/events/:id/replay`, or verify `X-Requeue-Signature` with the endpoint `secret` (replay adds it; the live forward does not). Contract: [README — Relay](../README.md#relay).
+
 ## 5. Replay from the dashboard
 
 Open [getrequeue.com/app](https://getrequeue.com/app). Paste `https://api.getrequeue.com` as the API base URL and **your** key. Find the event and replay.
@@ -162,7 +190,7 @@ curl -sS -X DELETE "$REQUEUE_API/v1/endpoints/ep_REPLACE_ME" \
 
 `PATCH` is partial: omitted fields stay as-is. You can also set `secret` (or `""` / `null` to clear it) and `alert_url` (or `""` / `null` to clear it). `endpoint_key` / ingest path do **not** rotate — existing workers keep posting to the same URL.
 
-`DELETE` is a soft-delete (`deleted_at`). Historical events stay. List/get hide the row. Ingest for that key returns `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination become `replay_failed`.
+`DELETE` is a soft-delete (`deleted_at`). Historical events stay. List/get hide the row. Ingest and relay for that key return `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination become `replay_failed`.
 
 ## Next
 

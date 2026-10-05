@@ -28,6 +28,7 @@ export function publicEndpoint(row: EndpointRow) {
     endpoint_key: row.endpoint_key,
     target_url: row.target_url,
     ingest_path: `/v1/ingest/${row.endpoint_key}`,
+    relay_path: `/v1/relay/${row.endpoint_key}`,
     has_secret: Boolean(row.secret),
     alert_url: row.alert_url ?? null,
     created_at: row.created_at,

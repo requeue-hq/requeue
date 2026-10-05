@@ -6,7 +6,7 @@ Management routes (`POST` / `GET` / `PATCH` / `DELETE /v1/endpoints`, `GET /v1/e
 Authorization: Bearer <api_key>
 ```
 
-[`src/auth.ts`](../src/auth.ts) rejects missing/empty Bearer tokens, then loads `api_keys` by `sha256(token)` hex ([`src/db.ts`](../src/db.ts) `findApiKeyByHash`). A match sets `projectId` / `apiKeyId` on the request. Ingest is **not** Bearer-auth: it uses the endpoint key in `POST /v1/ingest/:endpointKey`.
+[`src/auth.ts`](../src/auth.ts) rejects missing/empty Bearer tokens, then loads `api_keys` by `sha256(token)` hex ([`src/db.ts`](../src/db.ts) `findApiKeyByHash`). A match sets `projectId` / `apiKeyId` on the request. Ingest and relay are **not** Bearer-auth: they use the endpoint key in `POST /v1/ingest/:endpointKey` and `POST /v1/relay/:endpointKey`.
 
 `POST /v1/endpoints` creates a replay destination + public ingest key (`epk_…`). That is a different credential from a management API key.
 

@@ -46,7 +46,7 @@ curl -sS "$REQUEUE_API/v1/endpoints" \
   -d '{"name":"Orders worker","target_url":"https://httpbin.org/post","alert_url":"https://example.com/hooks/requeue-alerts"}'
 ```
 
-Use `endpoint.endpoint_key` from the response for `POST /v1/ingest/:endpointKey`. List, update (`PATCH`), or retire (`DELETE`) endpoints, list events, and replay with the same Bearer key. List/get responses include `has_secret`, `alert_url` (or null), and never the raw HMAC secret. `PATCH` does not rotate `endpoint_key`. Optional `alert_url` (`https://` only) gets one best-effort POST when ingest stores a failure. Deleted endpoints stay out of list/get; ingest then returns `410` and does not alert.
+Use `endpoint.endpoint_key` from the response for `POST /v1/ingest/:endpointKey`, or point a provider at `POST /v1/relay/:endpointKey` (`relay_path`). List, update (`PATCH`), or retire (`DELETE`) endpoints, list events, and replay with the same Bearer key. List/get responses include `has_secret`, `alert_url` (or null), and never the raw HMAC secret. `PATCH` does not rotate `endpoint_key`. Optional `alert_url` (`https://` only) gets one best-effort POST when ingest or a failed relay stores a failure. Deleted endpoints stay out of list/get; ingest and relay then return `410` and do not alert.
 
 Do not send the local demo key to hosted. Do not ingest private payloads with a key you do not control.
 

@@ -6,6 +6,8 @@ Stripe, Clerk, and your own workers retry a few times, then go quiet. The event 
 
 Requeue is a dead-letter inbox for webhooks, crons, and background workers. When something fails, send the payload and the reason. Inspect it later. One-click replay the original request to the configured target.
 
+Or point Stripe, Clerk, or another provider at Requeue. Requeue forwards the raw webhook to your app and keeps a copy when your app is down or returns an error.
+
 This repository is the **MIT core API** (Cloudflare Workers + D1). Marketing, waitlist, and the dashboard live at [getrequeue.com](https://getrequeue.com) — not in this repo.
 
 - **Product:** [getrequeue.com](https://getrequeue.com)
@@ -183,7 +185,7 @@ Replay POSTs the **stored payload** (not the ingest envelope) to `target_url`, u
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | `wrangler dev` |
-| `npm test` | ingest + replay tests |
+| `npm test` | ingest, relay, and replay tests |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run db:migrate` | apply D1 migrations locally, then the **local-only** seed |
 | `npm run db:seed:local` | re-apply the local-only demo key (never use on remote) |
@@ -226,12 +228,13 @@ No paid SaaS dependencies. No paid Cloudflare features (no Queues, no Hyperdrive
 ```mermaid
 flowchart LR
   subgraph producers [Producers]
-    WH[Webhooks]
+    WH[Stripe / Clerk / other webhooks]
     CR[Cron jobs]
     WK[Background workers]
   end
 
   subgraph worker [Requeue Worker - Hono]
+    RELAY[POST /v1/relay/:endpointKey]
     IN[POST /v1/ingest/:endpointKey]
     MGMT[Management API]
     AUTH[Bearer API key]
@@ -241,7 +244,9 @@ flowchart LR
   D1[(Cloudflare D1)]
   TGT[target_url]
 
-  WH --> IN
+  WH --> RELAY
+  RELAY -->|raw body, 2xx| TGT
+  RELAY -->|failure only| D1
   CR --> IN
   WK --> IN
   IN --> D1
@@ -252,7 +257,7 @@ flowchart LR
   OUT --> D1
 ```
 
-**Ingest** is authenticated by the endpoint key in the URL (a capability token).  
+**Ingest and relay** are authenticated by the endpoint key in the URL (a capability token).  
 **Management** (create endpoints, list events, replay) requires `Authorization: Bearer <api_key>`.
 
 Single-event replay is synchronous by default: Requeue POSTs the stored payload (or a request `payload` override) to `target_url` and writes a `replay_attempts` row. Pass `{"enqueue": true}` to mark the event `pending_replay`; a once-a-minute cron drains that D1 outbox. `POST /v1/events/bulk-replay` uses that same path for up to 50 ids and defaults to the outbox so a batch does not hold the Worker open. Failed outbox deliveries retry with exponential backoff (still D1-backed). Cloudflare Queues are not used. See [docs/retries.md](docs/retries.md).
@@ -282,8 +287,9 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | `GET` | `/v1/endpoints` | Bearer | List project endpoints (no raw `secret`; `has_secret` and `alert_url`) |
 | `GET` | `/v1/endpoints/:id` | Bearer | Fetch one project endpoint |
 | `PATCH` | `/v1/endpoints/:id` | Bearer | Update `name`, `target_url`, `secret`, and/or `alert_url` (ingest path stays put) |
-| `DELETE` | `/v1/endpoints/:id` | Bearer | Soft-delete; ingest returns `410 endpoint_gone` |
-| `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60 ingest/min/endpoint; `429` when exceeded) |
+| `DELETE` | `/v1/endpoints/:id` | Bearer | Soft-delete; ingest and relay return `410 endpoint_gone` |
+| `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60/min/endpoint, shared with relay; `429` when exceeded) |
+| `POST` | `/v1/relay/:endpointKey` | endpoint key | Forward the raw request to `target_url`; store it only when the app does not return 2xx |
 | `GET` | `/v1/events` | Bearer | List events; `?status=` + `?endpoint_id=` + `?q=` + `?limit=` |
 | `GET` | `/v1/events/:id` | Bearer | Event + replay attempts |
 | `POST` | `/v1/events/:id/replay` | Bearer | Deliver now, or `{ enqueue, payload?, headers? }` (override is this delivery only) |
@@ -296,11 +302,11 @@ See [API keys](#api-keys).
 
 Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`, `resolved`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored) and combines with `status` and `endpoint_id`. `resolved` is a dismiss: the row stays in the inbox and is not delivered.
 
-`GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key`, `has_secret`, and `alert_url` (or null). They never include the HMAC `secret`.
+`GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key`, `ingest_path`, `relay_path`, `has_secret`, and `alert_url` (or null). They never include the HMAC `secret`.
 
-`PATCH /v1/endpoints/:id` is partial. Omitted fields stay as-is. `secret: ""` or `secret: null` clears the HMAC secret (same as create treating an empty value as no secret). `alert_url: ""` or `alert_url: null` clears the notification URL the same way. `endpoint_key` / `ingest_path` are not rotated. `DELETE` sets `endpoints.deleted_at` so historical events remain (`events.endpoint_id` is `ON DELETE CASCADE`). List/get omit deleted rows; ingest for that key returns `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination are marked `replay_failed`. A deleted endpoint is not ingested, so it does not alert.
+`PATCH /v1/endpoints/:id` is partial. Omitted fields stay as-is. `secret: ""` or `secret: null` clears the HMAC secret (same as create treating an empty value as no secret). `alert_url: ""` or `alert_url: null` clears the notification URL the same way. `endpoint_key` / `ingest_path` / `relay_path` are not rotated. `DELETE` sets `endpoints.deleted_at` so historical events remain (`events.endpoint_id` is `ON DELETE CASCADE`). List/get omit deleted rows; ingest and relay for that key return `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination are marked `replay_failed`. A deleted endpoint is not called, so it does not alert.
 
-`alert_url`, when set, must be an absolute `https://` URL. `http://` and relative URLs are `400` with `error.code: "invalid_body"`. After ingest writes the failed event, Requeue schedules one background POST (`waitUntil`, a few seconds, no retry) to that URL:
+`alert_url`, when set, must be an absolute `https://` URL. `http://` and relative URLs are `400` with `error.code: "invalid_body"`. After ingest or a failed relay stores the event, Requeue schedules one background POST (`waitUntil`, a few seconds, no retry) to that URL:
 
 ```json
 {
@@ -316,11 +322,40 @@ Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`, `resolv
 }
 ```
 
-The alert does not include the payload or headers (`GET /v1/events/:id` does). Network errors and non-2xx responses are ignored. Ingest still returns the stored event.
+The alert does not include the payload or headers (`GET /v1/events/:id` does). Network errors and non-2xx responses are ignored. Ingest still returns the stored event. A captured relay returns 200 with `{ "captured": true, "event": { "id", "status", "reason" } }` and leaves the payload in the inbox.
 
 `POST /v1/waitlist` is unauthenticated. CORS allows `https://getrequeue.com` and `https://www.getrequeue.com` so the marketing site can `fetch` it. Light rate limit: **10 requests per minute per client IP** (`WAITLIST_RATE_LIMIT`). See [docs/waitlist.md](docs/waitlist.md).
 
-`POST /v1/ingest/:endpointKey` is limited to **60 requests per minute per endpoint** (fixed 60s D1 window). Override with Worker binding `INGEST_RATE_LIMIT`. Over-limit requests return `429` with `error.code: "rate_limited"` and `Retry-After`.
+`POST /v1/ingest/:endpointKey` and `POST /v1/relay/:endpointKey` share a limit of **60 requests per minute per endpoint** (fixed 60s D1 window). Override with Worker binding `INGEST_RATE_LIMIT`. Over-limit requests return `429` with `error.code: "rate_limited"` and `Retry-After`.
+
+### Relay
+
+`POST /v1/relay/:endpointKey` is the URL you give Stripe, Clerk, or any other provider that can only POST to one webhook endpoint. Same endpoint key as ingest. No Bearer token. Create sets `relay_path` (`/v1/relay/epk_…`).
+
+Hosted example: `https://api.getrequeue.com/v1/relay/epk_…`. `target_url` is your app's existing handler.
+
+Requeue POSTs the **raw body** (not an ingest envelope) to `target_url`. Header **values** are copied unchanged, including `Stripe-Signature`, `svix-id`, `svix-timestamp`, `svix-signature`, and `Content-Type`, so your app can still verify the provider signature. Names are case-insensitive. Hop-by-hop headers, `CF-*`, `X-Forwarded-*`, and `X-Requeue-*` are not forwarded. The upstream call times out after **10 seconds**. Redirects are not followed.
+
+| Upstream | Stored in the inbox? | What the provider gets |
+| --- | --- | --- |
+| 2xx | No | The same status, `Content-Type`, and body (body capped at 64KB) |
+| Anything else (4xx, 5xx, 3xx) | Yes. `failed`, `source: "relay"`, reason `relay: upstream <status>` | **200** and `{ "captured": true, "event": { "id", "status", "reason" } }` |
+| Timeout | Yes. Reason `relay: timeout` | 200, same captured body |
+| Network error | Yes. Reason `relay: network error` | 200, same captured body |
+| `target_url` is this Worker's `/v1/relay` or `/v1/ingest` | Yes. Reason `relay: loop`. No outbound fetch | 200, same captured body |
+
+Successful relays are not stored. D1 is for corpses, not a copy of every Stripe event.
+
+**Why 200 when your app failed.** Requeue has the payload. A 2xx tells Stripe and Clerk to stop retrying, so the inbox keeps one row and a later replay does not race a provider retry. Returning the upstream 5xx would keep those retries alive and write a row per attempt. 200 is the status every common provider treats as success. If the insert itself throws, the Worker returns 500 and the provider retries — Requeue only claims the event after the row is written. This is not configurable (no extra column). The direct ingest URL is still there if you want to record a failure without taking the provider off its own retry schedule.
+
+`alert_url`, when set, runs on a captured failure the same way as ingest (`source` is `relay`). It does not run on a 2xx pass-through. A deleted endpoint returns `410` `endpoint_gone` and does not alert. Bodies over 512KB return `413`, same as ingest.
+
+Create and `PATCH` reject a `target_url` whose path is `/v1/relay` or `/v1/ingest` on the request host or `api.getrequeue.com` (`400` `invalid_target_url`). That avoids a relay loop. A row that already points there is short-circuited as `relay: loop`.
+
+**Replay and provider signatures.** Replay POSTs the stored raw body and the stored headers, including the original signature. Provider signatures include a timestamp. Stripe's default tolerance is **5 minutes**, and Svix (Clerk) defaults to 5 minutes as well, so a later replay can fail the app's signature check even though the body matches. Two ways through that:
+
+- Edit-before-replay: `POST /v1/events/:id/replay` with a `headers` object for this delivery only (drop or replace `Stripe-Signature`). The stored corpse is unchanged. See [Edit before replay](#edit-before-replay).
+- Endpoint `secret`: replay adds `X-Requeue-Timestamp` and `X-Requeue-Signature: sha256=<hmac>` over `{timestamp}.{eventId}.{body}` where `body` is the body actually delivered. Verify that on the replay path. The live relay does **not** add `X-Requeue-*` headers, so the pass-through still looks like the provider.
 
 Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Bulk replay defaults to the outbox; see [Bulk replay](#bulk-replay). Dismiss without a delivery: [Resolve](#resolve). Details: [docs/retries.md](docs/retries.md). Hosted curls for filters, queued replay, bulk replay, resolve, edit-before-replay, and PATCH/DELETE: [docs/quickstart.md](docs/quickstart.md).
 
@@ -499,7 +534,7 @@ npm run typecheck
 
 Pull requests and pushes to `main` run the same commands on GitHub Actions. Pushes to `main` also deploy after CI passes when Cloudflare secrets are set — see [CI.md](CI.md).
 
-Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, bulk replay (enqueue, sync, mixed missing ids, empty / over-cap `400`, project isolation), edit-before-replay overrides (immediate + queued, HMAC on the delivered body), endpoint listing / update / soft-delete, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
+Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, relay (2xx passthrough, captured upstream failure / timeout / network error, deleted endpoint, shared rate limit, replay of the raw body), bulk replay (enqueue, sync, mixed missing ids, empty / over-cap `400`, project isolation), edit-before-replay overrides (immediate + queued, HMAC on the delivered body), endpoint listing / update / soft-delete, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
 
 ## License
 

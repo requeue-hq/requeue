@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { scheduleIngestAlert } from "./alert";
 import { bearerToken, requireApiKey, resolveApiKey } from "./auth";
@@ -33,6 +33,12 @@ import {
   parseIngestRateLimit,
   parseWaitlistRateLimit,
 } from "./ratelimit";
+import {
+  RELAY_LOOP_REASON,
+  collectRelayHeaders,
+  forwardRelay,
+  isRequeueLoopTarget,
+} from "./relay";
 import { replayEventForProject, type ReplayOverride } from "./replay";
 import { publicApiKey, publicAttempt, publicEndpoint, publicEvent, publicProject } from "./serialize";
 import type { ApiKeyRow, AppEnv, EndpointRow, EventRow, EventStatus, ProjectRow } from "./types";
@@ -226,8 +232,12 @@ app.post("/v1/endpoints", requireApiKey, async (c) => {
   }
 
   const targetUrl = asString(body.target_url);
-  if (!targetUrl || !isHttpUrl(targetUrl)) {
+  if (!targetUrl) {
     return jsonError(c, 400, "invalid_target_url", "target_url must be an http(s) URL");
+  }
+  const targetProblem = targetUrlProblem(targetUrl, c.req.url);
+  if (targetProblem) {
+    return jsonError(c, 400, "invalid_target_url", targetProblem);
   }
 
   const alert = parseAlertUrl(body);
@@ -281,7 +291,7 @@ app.patch("/v1/endpoints/:id", requireApiKey, async (c) => {
     return jsonError(c, 400, "invalid_body", "JSON object body required");
   }
 
-  const patched = applyEndpointPatch(endpoint, body);
+  const patched = applyEndpointPatch(endpoint, body, c.req.url);
   if (!patched.ok) {
     return jsonError(c, 400, patched.code, patched.message);
   }
@@ -317,18 +327,8 @@ app.post("/v1/ingest/:endpointKey", async (c) => {
     return jsonError(c, 410, "endpoint_gone", "Endpoint has been deleted");
   }
 
-  const limit = parseIngestRateLimit(c.env.INGEST_RATE_LIMIT);
-  const rate = await consumeIngestRateLimit(c.env.DB, endpoint.id, limit);
-  if (!rate.allowed) {
-    const retryAfter = String(rate.retryAfterSeconds);
-    c.header("Retry-After", retryAfter);
-    return jsonError(
-      c,
-      429,
-      "rate_limited",
-      `Ingest rate limit exceeded (${rate.limit} per minute per endpoint). Retry after ${retryAfter}s.`,
-    );
-  }
+  const limited = await enforceIngestRateLimit(c, endpoint.id);
+  if (limited) return limited;
 
   const raw = await c.req.text();
   if (byteLength(raw) > MAX_PAYLOAD_BYTES) {
@@ -342,34 +342,66 @@ app.post("/v1/ingest/:endpointKey", async (c) => {
     return jsonError(c, 400, "empty_payload", "Failure payload is required");
   }
 
-  const createdAt = nowIso();
-  const event = {
-    id: newId("evt"),
-    endpoint_id: endpoint.id,
-    status: "failed" as const,
+  const event = await persistFailedEvent(c, endpoint, {
     payload: ingested.payload,
-    content_type: ingested.contentType,
+    contentType: ingested.contentType,
     headers: ingested.headers,
     reason: ingested.reason,
     source: ingested.source,
-    created_at: createdAt,
-    updated_at: createdAt,
-    retry_count: 0,
-    next_retry_at: null,
-  };
-
-  await insertEvent(c.env.DB, event);
-  if (endpoint.alert_url) {
-    scheduleIngestAlert(readExecutionCtx(c), endpoint.alert_url, {
-      id: event.id,
-      endpoint_id: event.endpoint_id,
-      status: event.status,
-      reason: event.reason,
-      source: event.source,
-      created_at: event.created_at,
-    });
-  }
+  });
   return c.json({ event: publicEvent(event) }, 201);
+});
+
+app.post("/v1/relay/:endpointKey", async (c) => {
+  const endpoint = await findEndpointByKey(c.env.DB, c.req.param("endpointKey"));
+  if (!endpoint) {
+    return jsonError(c, 404, "unknown_endpoint", "Unknown endpoint key");
+  }
+  if (endpoint.deleted_at) {
+    return jsonError(c, 410, "endpoint_gone", "Endpoint has been deleted");
+  }
+
+  const limited = await enforceIngestRateLimit(c, endpoint.id);
+  if (limited) return limited;
+
+  const raw = await c.req.text();
+  if (byteLength(raw) > MAX_PAYLOAD_BYTES) {
+    return jsonError(c, 413, "payload_too_large", "Payload exceeds 512KB");
+  }
+
+  const forwarded = collectRelayHeaders(c.req.raw.headers);
+  const headersJson = Object.keys(forwarded).length > 0 ? JSON.stringify(forwarded) : null;
+  const contentType = c.req.header("content-type") ?? "application/json";
+
+  // A target that points back at relay/ingest would call this Worker again. Do not fetch.
+  if (isRequeueLoopTarget(endpoint.target_url, c.req.url)) {
+    const event = await persistFailedEvent(c, endpoint, {
+      payload: raw,
+      contentType,
+      headers: headersJson,
+      reason: RELAY_LOOP_REASON,
+      source: "relay",
+    });
+    return capturedRelayResponse(c, event);
+  }
+
+  const forwardedResult = await forwardRelay(endpoint.target_url, raw, forwarded);
+  if (forwardedResult.ok) {
+    // 2xx is the app's ack. Do not store the payload — D1 stays for failures.
+    return forwardedResult.response;
+  }
+
+  // 200, not the upstream status. The row is the corpse, so the provider must stop
+  // retrying or the inbox fills with the same payload and a later replay races Stripe.
+  // A thrown insert still becomes 500, and the provider retries that.
+  const event = await persistFailedEvent(c, endpoint, {
+    payload: raw,
+    contentType,
+    headers: headersJson,
+    reason: forwardedResult.reason,
+    source: "relay",
+  });
+  return capturedRelayResponse(c, event);
 });
 
 app.get("/v1/events", requireApiKey, async (c) => {
@@ -882,6 +914,7 @@ type EndpointPatchResult =
 function applyEndpointPatch(
   endpoint: EndpointRow,
   body: Record<string, unknown>,
+  requestUrl: string,
 ): EndpointPatchResult {
   const next = { ...endpoint };
 
@@ -895,8 +928,12 @@ function applyEndpointPatch(
 
   if (hasOwn(body, "target_url")) {
     const targetUrl = asString(body.target_url);
-    if (!targetUrl || !isHttpUrl(targetUrl)) {
+    if (!targetUrl) {
       return { ok: false, code: "invalid_target_url", message: "target_url must be an http(s) URL" };
+    }
+    const problem = targetUrlProblem(targetUrl, requestUrl);
+    if (problem) {
+      return { ok: false, code: "invalid_target_url", message: problem };
     }
     next.target_url = targetUrl;
   }
@@ -967,6 +1004,83 @@ function readExecutionCtx(c: {
   } catch {
     return undefined;
   }
+}
+
+function targetUrlProblem(targetUrl: string, requestUrl: string): string | null {
+  if (!isHttpUrl(targetUrl)) return "target_url must be an http(s) URL";
+  if (isRequeueLoopTarget(targetUrl, requestUrl)) {
+    return "target_url must not point at a Requeue relay or ingest URL";
+  }
+  return null;
+}
+
+async function enforceIngestRateLimit(c: Context<AppEnv>, endpointId: string): Promise<Response | null> {
+  const limit = parseIngestRateLimit(c.env.INGEST_RATE_LIMIT);
+  const rate = await consumeIngestRateLimit(c.env.DB, endpointId, limit);
+  if (rate.allowed) return null;
+  const retryAfter = String(rate.retryAfterSeconds);
+  c.header("Retry-After", retryAfter);
+  return jsonError(
+    c,
+    429,
+    "rate_limited",
+    `Ingest rate limit exceeded (${rate.limit} per minute per endpoint). Retry after ${retryAfter}s.`,
+  );
+}
+
+async function persistFailedEvent(
+  c: Context<AppEnv>,
+  endpoint: EndpointRow,
+  input: {
+    payload: string;
+    contentType: string;
+    headers: string | null;
+    reason: string | null;
+    source: string | null;
+  },
+): Promise<EventRow> {
+  const createdAt = nowIso();
+  const event: EventRow = {
+    id: newId("evt"),
+    endpoint_id: endpoint.id,
+    status: "failed",
+    payload: input.payload,
+    content_type: input.contentType,
+    headers: input.headers,
+    reason: input.reason,
+    source: input.source,
+    created_at: createdAt,
+    updated_at: createdAt,
+    retry_count: 0,
+    next_retry_at: null,
+  };
+
+  await insertEvent(c.env.DB, event);
+  if (endpoint.alert_url) {
+    scheduleIngestAlert(readExecutionCtx(c), endpoint.alert_url, {
+      id: event.id,
+      endpoint_id: event.endpoint_id,
+      status: event.status,
+      reason: event.reason,
+      source: event.source,
+      created_at: event.created_at,
+    });
+  }
+  return event;
+}
+
+function capturedRelayResponse(c: Context<AppEnv>, event: EventRow) {
+  return c.json(
+    {
+      captured: true,
+      event: {
+        id: event.id,
+        status: event.status,
+        reason: event.reason,
+      },
+    },
+    200,
+  );
 }
 
 function isHttpUrl(value: string): boolean {

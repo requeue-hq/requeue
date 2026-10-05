@@ -4,9 +4,9 @@ Short answers for people who landed here after a Stripe or Clerk webhook went qu
 
 ## What is Requeue? What is it not?
 
-Requeue is a **dead-letter inbox** for webhooks, crons, and background workers. Stripe, Clerk, and your own queues retry a few times, then stop. You POST the payload and the reason here. Inspect it later. Replay the original request to the configured `target_url`.
+Requeue is a **dead-letter inbox** for webhooks, crons, and background workers. Stripe, Clerk, and your own queues retry a few times, then stop. You POST the payload and the reason here, or you point the provider's webhook URL at `POST /v1/relay/:endpointKey` and Requeue forwards the raw request to your app. Inspect a failure later. Replay the original request to the configured `target_url`.
 
-It is **not** a full webhook gateway. We do not sit in front of Stripe as the public URL, transform or fan-out events, or replace outbound “webhooks as a service.” After provider retries stop, you send the corpse in.
+It is **not** a full webhook gateway. Relay is one pass-through to `target_url` plus an inbox when that call fails. We do not transform or fan-out events, and we do not replace outbound “webhooks as a service.”
 
 ## Self-host vs hosted
 
@@ -33,7 +33,7 @@ Same Bearer key as create. Hosted curls: [quickstart.md](quickstart.md).
 
 - `GET /v1/endpoints` / `GET /v1/endpoints/:id` — list or fetch one (no raw `secret`; `has_secret` and `alert_url`).
 - `PATCH /v1/endpoints/:id` — partial `name`, `target_url`, `secret`, and/or `alert_url`. Empty/`null` secret clears HMAC. Empty/`null` `alert_url` clears the notification URL. The ingest key (`epk_…`) stays put so you do not redeploy workers.
-- `DELETE /v1/endpoints/:id` — soft-delete. Inbox history stays. Further ingest returns `410` with `error.code: "endpoint_gone"` and does not alert. Queued outbox replays for that destination are marked `replay_failed`.
+- `DELETE /v1/endpoints/:id` — soft-delete. Inbox history stays. Further ingest and relay return `410` with `error.code: "endpoint_gone"` and do not alert. Queued outbox replays for that destination are marked `replay_failed`.
 
 Optional `alert_url` must be `https://`. After a failure is stored, Requeue POSTs `{ "type": "event.ingested", "event": { id, endpoint_id, status, reason, source, created_at } }` once. The payload stays in the inbox. A failed alert does not fail ingest.
 
@@ -59,7 +59,7 @@ Signing (when the endpoint has a `secret`) is unchanged — see above. Backoff t
 
 Fair and short. These products overlap on “webhooks / jobs / reliability”; they are not the same job.
 
-**[Hookdeck](https://hookdeck.com)** is an inbound webhook gateway: it receives events from Stripe, Shopify, and the rest, queues them, and forwards to your app with retries and observability. Requeue is the inbox *after* those retries (or the provider’s) stop — we are not the front door.
+**[Hookdeck](https://hookdeck.com)** is an inbound webhook gateway: it receives events from Stripe, Shopify, and the rest, queues them, and forwards to your app with retries and observability. Requeue can be the webhook URL (`/v1/relay/epk_…`) and will forward once. If your app fails, the event stays in the inbox for you to replay — that is not Hookdeck's retry pipeline.
 
 **[Svix](https://www.svix.com)** is webhooks-as-a-service for *sending* events to your customers (outbound delivery, customer portals, signing). Requeue is for catching *your* inbound webhook and job failures, not for emitting webhooks to end users.
 
