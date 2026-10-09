@@ -260,7 +260,7 @@ flowchart LR
 **Ingest and relay** are authenticated by the endpoint key in the URL (a capability token).  
 **Management** (create endpoints, list events, replay) requires `Authorization: Bearer <api_key>`.
 
-Single-event replay is synchronous by default: Requeue POSTs the stored payload (or a request `payload` override) to `target_url` and writes a `replay_attempts` row. Pass `{"enqueue": true}` to mark the event `pending_replay`; a once-a-minute cron drains that D1 outbox. `POST /v1/events/bulk-replay` uses that same path for up to 50 ids and defaults to the outbox so a batch does not hold the Worker open. Failed outbox deliveries retry with exponential backoff (still D1-backed). Cloudflare Queues are not used. See [docs/retries.md](docs/retries.md).
+Single-event replay is synchronous by default: Requeue POSTs the stored payload (or a request `payload` override) to `target_url` and writes a `replay_attempts` row. Pass `{"enqueue": true}` to mark the event `pending_replay`; a once-a-minute cron drains that D1 outbox. `POST /v1/events/bulk-replay` uses that same path for up to 50 ids and defaults to the outbox so a batch does not hold the Worker open. Failed outbox deliveries retry with exponential backoff (still D1-backed). An endpoint can opt in so a captured failure joins that outbox immediately (`auto_retry`). Cloudflare Queues are not used. See [docs/retries.md](docs/retries.md).
 
 ## API keys
 
@@ -283,10 +283,10 @@ rq_demo_local_dev_only_do_not_use_in_prod
 | `POST` | `/v1/api-keys` | bootstrap secret or Bearer | Mint a management key (bootstrap also creates a project) |
 | `GET` | `/v1/api-keys` | Bearer | List keys for the current project |
 | `DELETE` | `/v1/api-keys/:id` | Bearer | Revoke a key |
-| `POST` | `/v1/endpoints` | Bearer | Create an endpoint (`target_url`, optional `secret`, optional `alert_url`) |
-| `GET` | `/v1/endpoints` | Bearer | List project endpoints (no raw `secret`; `has_secret` and `alert_url`) |
+| `POST` | `/v1/endpoints` | Bearer | Create an endpoint (`target_url`, optional `secret`, `alert_url`, retry policy) |
+| `GET` | `/v1/endpoints` | Bearer | List project endpoints (no raw `secret`; `has_secret`, `alert_url`, retry policy) |
 | `GET` | `/v1/endpoints/:id` | Bearer | Fetch one project endpoint |
-| `PATCH` | `/v1/endpoints/:id` | Bearer | Update `name`, `target_url`, `secret`, and/or `alert_url` (ingest path stays put) |
+| `PATCH` | `/v1/endpoints/:id` | Bearer | Update `name`, `target_url`, `secret`, `alert_url`, and/or retry policy (ingest path stays put) |
 | `DELETE` | `/v1/endpoints/:id` | Bearer | Soft-delete; ingest and relay return `410 endpoint_gone` |
 | `POST` | `/v1/ingest/:endpointKey` | endpoint key | Store a failed event (60/min/endpoint, shared with relay; `429` when exceeded) |
 | `POST` | `/v1/relay/:endpointKey` | endpoint key | Forward the raw request to `target_url`; store it only when the app does not return 2xx |
@@ -302,7 +302,7 @@ See [API keys](#api-keys).
 
 Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`, `resolved`. Optional `endpoint_id` limits the list to one destination so you can inspect failures per endpoint. Optional `q` is a case-insensitive substring over event id, reason, source, and payload text (blank `q` is ignored) and combines with `status` and `endpoint_id`. `resolved` is a dismiss: the row stays in the inbox and is not delivered.
 
-`GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key`, `ingest_path`, `relay_path`, `has_secret`, and `alert_url` (or null). They never include the HMAC `secret`.
+`GET /v1/endpoints` is project-scoped (same Bearer key as create). Responses include `endpoint_key`, `ingest_path`, `relay_path`, `has_secret`, `alert_url` (or null), `auto_retry`, `retry_max_attempts`, and `retry_base_delay_seconds`. They never include the HMAC `secret`.
 
 `PATCH /v1/endpoints/:id` is partial. Omitted fields stay as-is. `secret: ""` or `secret: null` clears the HMAC secret (same as create treating an empty value as no secret). `alert_url: ""` or `alert_url: null` clears the notification URL the same way. `endpoint_key` / `ingest_path` / `relay_path` are not rotated. `DELETE` sets `endpoints.deleted_at` so historical events remain (`events.endpoint_id` is `ON DELETE CASCADE`). List/get omit deleted rows; ingest and relay for that key return `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination are marked `replay_failed`. A deleted endpoint is not called, so it does not alert.
 
@@ -322,7 +322,19 @@ Event statuses: `failed`, `pending_replay`, `replayed`, `replay_failed`, `resolv
 }
 ```
 
-The alert does not include the payload or headers (`GET /v1/events/:id` does). Network errors and non-2xx responses are ignored. Ingest still returns the stored event. A captured relay returns 200 with `{ "captured": true, "event": { "id", "status", "reason" } }` and leaves the payload in the inbox.
+The alert does not include the payload or headers (`GET /v1/events/:id` does). Network errors and non-2xx responses are ignored. Ingest still returns the stored event. A captured relay returns 200 with `{ "captured": true, "event": { "id", "status", "reason" } }` and leaves the payload in the inbox. When `auto_retry` is on, that stored `status` (and the alert's `event.status`) is `pending_replay` instead of `failed`.
+
+### Automatic retry
+
+Captured failures stay `failed` until you replay them, unless the endpoint opts in. `auto_retry`, `retry_max_attempts`, and `retry_base_delay_seconds` are optional on create and `PATCH`.
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `auto_retry` | `false` | `true` stores ingest and a failed relay as `pending_replay` with `next_retry_at` set to now. The once-a-minute cron delivers the corpse. `false` leaves the capture at `failed`. |
+| `retry_max_attempts` | `6` | Outbox delivery budget for this endpoint (integer 1–20). Counts every cron POST, including the first. The last failure becomes `replay_failed`. |
+| `retry_base_delay_seconds` | `60` | Seconds after the first failed outbox delivery (integer 1–86400). Later failures wait `base * 2^(n-1)`, capped at 86400 seconds. |
+
+The same budget applies to `{ "enqueue": true }` and bulk enqueue. Defaults match the historical schedule (1m, 2m, 4m, 8m, 16m, then stop). Synchronous replay stays one-shot and clears `next_retry_at`. Turning `auto_retry` off does not cancel events already on the outbox. Cron granularity is one minute, so a shorter base delay still runs on the next tick once it is due. A non-boolean `auto_retry` or an out-of-range number is `400` `invalid_body`. No Cloudflare Queues. Contract: [docs/retries.md](docs/retries.md).
 
 `POST /v1/waitlist` is unauthenticated. CORS allows `https://getrequeue.com` and `https://www.getrequeue.com` so the marketing site can `fetch` it. Light rate limit: **10 requests per minute per client IP** (`WAITLIST_RATE_LIMIT`). See [docs/waitlist.md](docs/waitlist.md).
 
@@ -339,12 +351,12 @@ Requeue POSTs the **raw body** (not an ingest envelope) to `target_url`. Header 
 | Upstream | Stored in the inbox? | What the provider gets |
 | --- | --- | --- |
 | 2xx | No | The same status, `Content-Type`, and body (body capped at 64KB) |
-| Anything else (4xx, 5xx, 3xx) | Yes. `failed`, `source: "relay"`, reason `relay: upstream <status>` | **200** and `{ "captured": true, "event": { "id", "status", "reason" } }` |
+| Anything else (4xx, 5xx, 3xx) | Yes. `failed` (or `pending_replay` when `auto_retry` is on), `source: "relay"`, reason `relay: upstream <status>` | **200** and `{ "captured": true, "event": { "id", "status", "reason" } }` |
 | Timeout | Yes. Reason `relay: timeout` | 200, same captured body |
 | Network error | Yes. Reason `relay: network error` | 200, same captured body |
 | `target_url` is this Worker's `/v1/relay` or `/v1/ingest` | Yes. Reason `relay: loop`. No outbound fetch | 200, same captured body |
 
-Successful relays are not stored. D1 is for corpses, not a copy of every Stripe event.
+Timeout, network error, and loop captures use that same status: `pending_replay` when `auto_retry` is on, otherwise `failed`. Successful relays are not stored. D1 is for corpses, not a copy of every Stripe event.
 
 **Why 200 when your app failed.** Requeue has the payload. A 2xx tells Stripe and Clerk to stop retrying, so the inbox keeps one row and a later replay does not race a provider retry. Returning the upstream 5xx would keep those retries alive and write a row per attempt. 200 is the status every common provider treats as success. If the insert itself throws, the Worker returns 500 and the provider retries — Requeue only claims the event after the row is written. This is not configurable (no extra column). The direct ingest URL is still there if you want to record a failure without taking the provider off its own retry schedule.
 
@@ -357,7 +369,7 @@ Create and `PATCH` reject a `target_url` whose path is `/v1/relay` or `/v1/inges
 - Edit-before-replay: `POST /v1/events/:id/replay` with a `headers` object for this delivery only (drop or replace `Stripe-Signature`). The stored corpse is unchanged. See [Edit before replay](#edit-before-replay).
 - Endpoint `secret`: replay adds `X-Requeue-Timestamp` and `X-Requeue-Signature: sha256=<hmac>` over `{timestamp}.{eventId}.{body}` where `body` is the body actually delivered. Verify that on the replay path. The live relay does **not** add `X-Requeue-*` headers, so the pass-through still looks like the provider.
 
-Queued replays (`{"enqueue": true}` or cron) retry automatically on failure: 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Bulk replay defaults to the outbox; see [Bulk replay](#bulk-replay). Dismiss without a delivery: [Resolve](#resolve). Details: [docs/retries.md](docs/retries.md). Hosted curls for filters, queued replay, bulk replay, resolve, edit-before-replay, and PATCH/DELETE: [docs/quickstart.md](docs/quickstart.md).
+Queued replays (`{"enqueue": true}` or cron) retry automatically on failure. The default budget is 1m, 2m, 4m, 8m, 16m, then `replay_failed` after 6 outbox attempts. `retry_max_attempts` and `retry_base_delay_seconds` on the endpoint replace that schedule. Manual `POST /v1/events/:id/replay` is one-shot and does not reschedule. Bulk replay defaults to the outbox; see [Bulk replay](#bulk-replay). Dismiss without a delivery: [Resolve](#resolve). Opt-in capture retry: [Automatic retry](#automatic-retry). Details: [docs/retries.md](docs/retries.md). Hosted curls for filters, queued replay, bulk replay, resolve, edit-before-replay, and PATCH/DELETE: [docs/quickstart.md](docs/quickstart.md).
 
 ### Bulk replay
 
@@ -534,7 +546,7 @@ npm run typecheck
 
 Pull requests and pushes to `main` run the same commands on GitHub Actions. Pushes to `main` also deploy after CI passes when Cloudflare secrets are set — see [CI.md](CI.md).
 
-Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, relay (2xx passthrough, captured upstream failure / timeout / network error, deleted endpoint, shared rate limit, replay of the raw body), bulk replay (enqueue, sync, mixed missing ids, empty / over-cap `400`, project isolation), edit-before-replay overrides (immediate + queued, HMAC on the delivered body), endpoint listing / update / soft-delete, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
+Tests run in the Workers runtime via `@cloudflare/vitest-plugin` and cover the ingest → list → replay happy path, relay (2xx passthrough, captured upstream failure / timeout / network error, deleted endpoint, shared rate limit, replay of the raw body), bulk replay (enqueue, sync, mixed missing ids, empty / over-cap `400`, project isolation), edit-before-replay overrides (immediate + queued, HMAC on the delivered body), endpoint listing / update / soft-delete, per-endpoint auto-retry, ingest rate limits, waitlist capture, outbox retry/backoff, plus local demo-key and bootstrap minting.
 
 ## License
 

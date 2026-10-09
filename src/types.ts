@@ -25,6 +25,12 @@ export type EndpointRow = {
   secret: string | null;
   /** Absolute https URL notified after ingest stores a failure. Null means no alert. */
   alert_url: string | null;
+  /** 1 = ingest and a failed relay join the D1 outbox. 0 = stay `failed` until a person replays. */
+  auto_retry: number;
+  /** Outbox delivery budget for this endpoint, including the first cron POST. */
+  retry_max_attempts: number;
+  /** Seconds to wait after the first failed outbox delivery. Later waits double. */
+  retry_base_delay_seconds: number;
   created_at: string;
   deleted_at: string | null;
 };
