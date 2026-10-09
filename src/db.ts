@@ -62,8 +62,11 @@ export async function insertEndpoint(
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO endpoints (id, project_id, name, endpoint_key, target_url, secret, alert_url, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO endpoints (
+         id, project_id, name, endpoint_key, target_url, secret, alert_url,
+         auto_retry, retry_max_attempts, retry_base_delay_seconds, created_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       row.id,
@@ -73,6 +76,9 @@ export async function insertEndpoint(
       row.target_url,
       row.secret,
       row.alert_url,
+      row.auto_retry,
+      row.retry_max_attempts,
+      row.retry_base_delay_seconds,
       row.created_at,
     )
     .run();
@@ -113,15 +119,34 @@ export async function updateEndpoint(
   db: D1Database,
   endpointId: string,
   projectId: string,
-  fields: { name: string; target_url: string; secret: string | null; alert_url: string | null },
+  fields: {
+    name: string;
+    target_url: string;
+    secret: string | null;
+    alert_url: string | null;
+    auto_retry: number;
+    retry_max_attempts: number;
+    retry_base_delay_seconds: number;
+  },
 ): Promise<void> {
   await db
     .prepare(
       `UPDATE endpoints
-       SET name = ?, target_url = ?, secret = ?, alert_url = ?
+       SET name = ?, target_url = ?, secret = ?, alert_url = ?,
+           auto_retry = ?, retry_max_attempts = ?, retry_base_delay_seconds = ?
        WHERE id = ? AND project_id = ? AND deleted_at IS NULL`,
     )
-    .bind(fields.name, fields.target_url, fields.secret, fields.alert_url, endpointId, projectId)
+    .bind(
+      fields.name,
+      fields.target_url,
+      fields.secret,
+      fields.alert_url,
+      fields.auto_retry,
+      fields.retry_max_attempts,
+      fields.retry_base_delay_seconds,
+      endpointId,
+      projectId,
+    )
     .run();
 }
 
@@ -160,8 +185,9 @@ export async function insertEvent(db: D1Database, row: EventRow): Promise<void> 
   await db
     .prepare(
       `INSERT INTO events
-        (id, endpoint_id, status, payload, content_type, headers, reason, source, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, endpoint_id, status, payload, content_type, headers, reason, source,
+         created_at, updated_at, retry_count, next_retry_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       row.id,
@@ -174,6 +200,8 @@ export async function insertEvent(db: D1Database, row: EventRow): Promise<void> 
       row.source,
       row.created_at,
       row.updated_at,
+      row.retry_count ?? 0,
+      row.next_retry_at,
     )
     .run();
 }
@@ -302,7 +330,9 @@ export async function updateEventStatus(
   status: EventStatus,
   updatedAt: string,
 ): Promise<void> {
-  if (status === "replayed") {
+  // A finished delivery is off the outbox. replay_failed here is the synchronous
+  // one-shot path; the cron reschedule writes its own next_retry_at afterward.
+  if (status === "replayed" || status === "replay_failed") {
     await db
       .prepare("UPDATE events SET status = ?, updated_at = ?, next_retry_at = NULL WHERE id = ?")
       .bind(status, updatedAt, eventId)
@@ -359,21 +389,28 @@ export async function updateEventReplaySchedule(
     .run();
 }
 
+export type PendingReplayRow = EventRow & {
+  retry_max_attempts: number | null;
+  retry_base_delay_seconds: number | null;
+};
+
 export async function listPendingReplayEvents(
   db: D1Database,
   limit: number,
   now: string,
-): Promise<EventRow[]> {
+): Promise<PendingReplayRow[]> {
   const result = await db
     .prepare(
-      `SELECT * FROM events
-       WHERE status = 'pending_replay'
-         AND (next_retry_at IS NULL OR next_retry_at <= ?)
-       ORDER BY COALESCE(next_retry_at, updated_at) ASC
+      `SELECT e.*, ep.retry_max_attempts, ep.retry_base_delay_seconds
+       FROM events e
+       INNER JOIN endpoints ep ON ep.id = e.endpoint_id
+       WHERE e.status = 'pending_replay'
+         AND (e.next_retry_at IS NULL OR e.next_retry_at <= ?)
+       ORDER BY COALESCE(e.next_retry_at, e.updated_at) ASC
        LIMIT ?`,
     )
     .bind(now, limit)
-    .all<EventRow>();
+    .all<PendingReplayRow>();
   return result.results ?? [];
 }
 

@@ -31,8 +31,8 @@ Retries and the D1 outbox: [retries.md](retries.md). Immediate vs queued replay:
 
 Same Bearer key as create. Hosted curls: [quickstart.md](quickstart.md).
 
-- `GET /v1/endpoints` / `GET /v1/endpoints/:id` — list or fetch one (no raw `secret`; `has_secret` and `alert_url`).
-- `PATCH /v1/endpoints/:id` — partial `name`, `target_url`, `secret`, and/or `alert_url`. Empty/`null` secret clears HMAC. Empty/`null` `alert_url` clears the notification URL. The ingest key (`epk_…`) stays put so you do not redeploy workers.
+- `GET /v1/endpoints` / `GET /v1/endpoints/:id` — list or fetch one (no raw `secret`; `has_secret`, `alert_url`, `auto_retry`, `retry_max_attempts`, `retry_base_delay_seconds`).
+- `PATCH /v1/endpoints/:id` — partial `name`, `target_url`, `secret`, `alert_url`, and/or the retry policy. Empty/`null` secret clears HMAC. Empty/`null` `alert_url` clears the notification URL. The ingest key (`epk_…`) stays put so you do not redeploy workers.
 - `DELETE /v1/endpoints/:id` — soft-delete. Inbox history stays. Further ingest and relay return `410` with `error.code: "endpoint_gone"` and do not alert. Queued outbox replays for that destination are marked `replay_failed`.
 
 Optional `alert_url` must be `https://`. After a failure is stored, Requeue POSTs `{ "type": "event.ingested", "event": { id, endpoint_id, status, reason, source, created_at } }` once. The payload stays in the inbox. A failed alert does not fail ingest.
@@ -47,7 +47,7 @@ Yes. `POST /v1/events/:id/replay` accepts optional `payload` and `headers`. They
 
 ## Immediate replay vs the outbox?
 
-`POST /v1/events/:id/replay` delivers now and is one-shot. `{ "enqueue": true }` marks the event `pending_replay`; a once-a-minute cron drains the D1 outbox and retries failed deliveries (1m, 2m, 4m, 8m, 16m, then `replay_failed`). Cloudflare Queues are not used.
+`POST /v1/events/:id/replay` delivers now and is one-shot. `{ "enqueue": true }` marks the event `pending_replay`; a once-a-minute cron drains the D1 outbox and retries failed deliveries. The default budget is 1m, 2m, 4m, 8m, 16m, then `replay_failed`. Set `auto_retry: true` on the endpoint to put a new ingest or failed relay on that outbox immediately. `retry_max_attempts` (1–20, default 6) and `retry_base_delay_seconds` (1–86400, default 60) are that endpoint's budget for every queued delivery. Cloudflare Queues are not used.
 
 After an outage, `POST /v1/events/bulk-replay` with `{ "ids": ["evt_…", "evt_…"] }` queues up to 50 events for that same outbox (`enqueue` defaults to true). Per-id errors do not cancel the rest. Payload edits stay on the single-event route.
 
@@ -59,7 +59,7 @@ Signing (when the endpoint has a `secret`) is unchanged — see above. Backoff t
 
 Fair and short. These products overlap on “webhooks / jobs / reliability”; they are not the same job.
 
-**[Hookdeck](https://hookdeck.com)** is an inbound webhook gateway: it receives events from Stripe, Shopify, and the rest, queues them, and forwards to your app with retries and observability. Requeue can be the webhook URL (`/v1/relay/epk_…`) and will forward once. If your app fails, the event stays in the inbox for you to replay — that is not Hookdeck's retry pipeline.
+**[Hookdeck](https://hookdeck.com)** is an inbound webhook gateway: it receives events from Stripe, Shopify, and the rest, queues them, and forwards to your app with retries and observability. Requeue can be the webhook URL (`/v1/relay/epk_…`) and will forward once. If your app fails, the event stays in the inbox. Optional per-endpoint auto-retry replays it with backoff; otherwise you replay it yourself. That is still not Hookdeck's retry pipeline (no transforms, no fan-out).
 
 **[Svix](https://www.svix.com)** is webhooks-as-a-service for *sending* events to your customers (outbound delivery, customer portals, signing). Requeue is for catching *your* inbound webhook and job failures, not for emitting webhooks to end users.
 

@@ -37,6 +37,8 @@ curl -sS "$REQUEUE_API/v1/endpoints" \
 
 `alert_url` is optional. When it is an absolute `https://` URL, each stored failure also POSTs a small `event.ingested` notification there (no payload, no retry). `http://` and relative URLs are rejected. `PATCH` with `null` or `""` clears it.
 
+`auto_retry` defaults to false. Set it to `true` to put each captured failure on the D1 outbox immediately (`pending_replay`) so the once-a-minute cron replays it. Optional `retry_max_attempts` (default 6, max 20) and `retry_base_delay_seconds` (default 60) set that endpoint's backoff. The same numbers apply when you enqueue a replay yourself. See [retries.md](retries.md).
+
 ## 4. Ingest a failure
 
 Ingest uses the endpoint key in the URL, not the Bearer token.
@@ -75,7 +77,7 @@ https://api.getrequeue.com/v1/relay/epk_REPLACE_ME
 
 Use the `endpoint_key` from the create response (`relay_path` is the same path). Clerk and other Svix senders use that same URL.
 
-Requeue forwards the raw body and the provider signature headers (`Stripe-Signature`, or `svix-id` / `svix-timestamp` / `svix-signature`) to `target_url`. When your app returns 2xx, Stripe sees that status and body, and Requeue does not store the event. When your app errors, times out (10s), or cannot be reached, Requeue stores the raw payload (`source: "relay"`, status `failed`) and answers **200** so Stripe stops retrying. Replay it from the inbox. `alert_url` fires on that capture.
+Requeue forwards the raw body and the provider signature headers (`Stripe-Signature`, or `svix-id` / `svix-timestamp` / `svix-signature`) to `target_url`. When your app returns 2xx, Stripe sees that status and body, and Requeue does not store the event. When your app errors, times out (10s), or cannot be reached, Requeue stores the raw payload (`source: "relay"`, status `failed`, or `pending_replay` when `auto_retry` is on) and answers **200** so Stripe stops retrying. Replay it from the inbox, or let cron retry it when auto-retry is on. `alert_url` fires on that capture.
 
 Provider signatures expire. Stripe's default tolerance is 5 minutes, so a replay later than that can fail your app's `Stripe-Signature` check. For that delivery, pass a `headers` override on `POST /v1/events/:id/replay`, or verify `X-Requeue-Signature` with the endpoint `secret` (replay adds it; the live forward does not). Contract: [README — Relay](../README.md#relay).
 
@@ -102,7 +104,7 @@ curl -sS -X POST "$REQUEUE_API/v1/events/evt_REPLACE_ME/replay" \
   -d '{"enqueue": true}'
 ```
 
-The event becomes `pending_replay`. Backoff table: [retries.md](retries.md).
+The event becomes `pending_replay`. Backoff uses the endpoint's `retry_max_attempts` and `retry_base_delay_seconds` (default 6 attempts, 60s base). Table: [retries.md](retries.md).
 
 ## Bulk replay
 
@@ -188,7 +190,7 @@ curl -sS -X DELETE "$REQUEUE_API/v1/endpoints/ep_REPLACE_ME" \
   -H "Authorization: Bearer $REQUEUE_KEY"
 ```
 
-`PATCH` is partial: omitted fields stay as-is. You can also set `secret` (or `""` / `null` to clear it) and `alert_url` (or `""` / `null` to clear it). `endpoint_key` / ingest path do **not** rotate — existing workers keep posting to the same URL.
+`PATCH` is partial: omitted fields stay as-is. You can also set `secret` (or `""` / `null` to clear it), `alert_url` (or `""` / `null` to clear it), and the retry policy (`auto_retry`, `retry_max_attempts`, `retry_base_delay_seconds`). `endpoint_key` / ingest path do **not** rotate — existing workers keep posting to the same URL.
 
 `DELETE` is a soft-delete (`deleted_at`). Historical events stay. List/get hide the row. Ingest and relay for that key return `410` with `error.code: "endpoint_gone"`. Pending outbox replays for the destination become `replay_failed`.
 

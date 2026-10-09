@@ -26,7 +26,15 @@ import {
 } from "./db";
 import { ApiError, jsonError } from "./errors";
 import { asRecord, nowIso } from "./json";
-import { processPendingReplays } from "./outbox";
+import {
+  DEFAULT_RETRY_BASE_DELAY_SECONDS,
+  DEFAULT_RETRY_MAX_ATTEMPTS,
+  MAX_RETRY_BASE_DELAY_SECONDS,
+  MAX_RETRY_MAX_ATTEMPTS,
+  MIN_RETRY_BASE_DELAY_SECONDS,
+  MIN_RETRY_MAX_ATTEMPTS,
+  processPendingReplays,
+} from "./outbox";
 import {
   consumeIngestRateLimit,
   consumeWaitlistRateLimit,
@@ -245,6 +253,11 @@ app.post("/v1/endpoints", requireApiKey, async (c) => {
     return jsonError(c, 400, "invalid_body", alert.message);
   }
 
+  const retry = readRetryPolicy(body, DEFAULT_RETRY_POLICY_INPUT);
+  if (!retry.ok) {
+    return jsonError(c, 400, "invalid_body", retry.message);
+  }
+
   const name = asString(body.name) || hostnameOf(targetUrl);
   const secret = asString(body.secret);
   const createdAt = nowIso();
@@ -256,6 +269,9 @@ app.post("/v1/endpoints", requireApiKey, async (c) => {
     target_url: targetUrl,
     secret: secret || null,
     alert_url: alert.present ? alert.value : null,
+    auto_retry: retry.auto_retry ? 1 : 0,
+    retry_max_attempts: retry.retry_max_attempts,
+    retry_base_delay_seconds: retry.retry_base_delay_seconds,
     created_at: createdAt,
     deleted_at: null,
   };
@@ -301,6 +317,9 @@ app.patch("/v1/endpoints/:id", requireApiKey, async (c) => {
     target_url: patched.row.target_url,
     secret: patched.row.secret,
     alert_url: patched.row.alert_url,
+    auto_retry: patched.row.auto_retry,
+    retry_max_attempts: patched.row.retry_max_attempts,
+    retry_base_delay_seconds: patched.row.retry_base_delay_seconds,
   });
 
   return c.json({ endpoint: publicEndpoint(patched.row) });
@@ -957,7 +976,93 @@ function applyEndpointPatch(
     if (alert.present) next.alert_url = alert.value;
   }
 
+  const retry = readRetryPolicy(body, {
+    auto_retry: Boolean(endpoint.auto_retry),
+    retry_max_attempts: endpoint.retry_max_attempts,
+    retry_base_delay_seconds: endpoint.retry_base_delay_seconds,
+  });
+  if (!retry.ok) {
+    return { ok: false, code: "invalid_body", message: retry.message };
+  }
+  next.auto_retry = retry.auto_retry ? 1 : 0;
+  next.retry_max_attempts = retry.retry_max_attempts;
+  next.retry_base_delay_seconds = retry.retry_base_delay_seconds;
+
   return { ok: true, row: next };
+}
+
+const DEFAULT_RETRY_POLICY_INPUT = {
+  auto_retry: false,
+  retry_max_attempts: DEFAULT_RETRY_MAX_ATTEMPTS,
+  retry_base_delay_seconds: DEFAULT_RETRY_BASE_DELAY_SECONDS,
+};
+
+type RetryPolicyInput = {
+  auto_retry: boolean;
+  retry_max_attempts: number;
+  retry_base_delay_seconds: number;
+};
+
+type RetryPolicyRead =
+  | { ok: true; auto_retry: boolean; retry_max_attempts: number; retry_base_delay_seconds: number }
+  | { ok: false; message: string };
+
+/** Omitted fields keep `current`. Present fields must be a boolean or an in-range integer. */
+function readRetryPolicy(body: Record<string, unknown>, current: RetryPolicyInput): RetryPolicyRead {
+  const autoRetry = readBooleanField(body, "auto_retry", current.auto_retry);
+  if (!autoRetry.ok) return autoRetry;
+
+  const maxAttempts = readIntField(
+    body,
+    "retry_max_attempts",
+    current.retry_max_attempts,
+    MIN_RETRY_MAX_ATTEMPTS,
+    MAX_RETRY_MAX_ATTEMPTS,
+  );
+  if (!maxAttempts.ok) return maxAttempts;
+
+  const baseDelay = readIntField(
+    body,
+    "retry_base_delay_seconds",
+    current.retry_base_delay_seconds,
+    MIN_RETRY_BASE_DELAY_SECONDS,
+    MAX_RETRY_BASE_DELAY_SECONDS,
+  );
+  if (!baseDelay.ok) return baseDelay;
+
+  return {
+    ok: true,
+    auto_retry: autoRetry.value,
+    retry_max_attempts: maxAttempts.value,
+    retry_base_delay_seconds: baseDelay.value,
+  };
+}
+
+function readBooleanField(
+  body: Record<string, unknown>,
+  key: string,
+  current: boolean,
+): { ok: true; value: boolean } | { ok: false; message: string } {
+  if (!hasOwn(body, key)) return { ok: true, value: current };
+  if (typeof body[key] !== "boolean") {
+    return { ok: false, message: `${key} must be a boolean` };
+  }
+  return { ok: true, value: body[key] as boolean };
+}
+
+function readIntField(
+  body: Record<string, unknown>,
+  key: string,
+  current: number,
+  min: number,
+  max: number,
+): { ok: true; value: number } | { ok: false; message: string } {
+  if (!hasOwn(body, key)) return { ok: true, value: current };
+  const value = body[key];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    return { ok: false, message: `${key} must be an integer from ${min} to ${max}` };
+  }
+  return { ok: true, value };
 }
 
 type AlertUrlParse =
@@ -1040,10 +1145,12 @@ async function persistFailedEvent(
   },
 ): Promise<EventRow> {
   const createdAt = nowIso();
+  // Opt-in only. The cron delivers; this request does not POST target_url.
+  const queued = Boolean(endpoint.auto_retry);
   const event: EventRow = {
     id: newId("evt"),
     endpoint_id: endpoint.id,
-    status: "failed",
+    status: queued ? "pending_replay" : "failed",
     payload: input.payload,
     content_type: input.contentType,
     headers: input.headers,
@@ -1052,7 +1159,7 @@ async function persistFailedEvent(
     created_at: createdAt,
     updated_at: createdAt,
     retry_count: 0,
-    next_retry_at: null,
+    next_retry_at: queued ? createdAt : null,
   };
 
   await insertEvent(c.env.DB, event);

@@ -1,4 +1,5 @@
 import { parseJson } from "./json";
+import { DEFAULT_RETRY_BASE_DELAY_SECONDS, DEFAULT_RETRY_MAX_ATTEMPTS } from "./outbox";
 import type { ApiKeyRow, EndpointRow, EventRow, ProjectRow, ReplayAttemptRow } from "./types";
 
 export function publicProject(row: ProjectRow) {
@@ -31,6 +32,9 @@ export function publicEndpoint(row: EndpointRow) {
     relay_path: `/v1/relay/${row.endpoint_key}`,
     has_secret: Boolean(row.secret),
     alert_url: row.alert_url ?? null,
+    auto_retry: Boolean(row.auto_retry),
+    retry_max_attempts: row.retry_max_attempts ?? DEFAULT_RETRY_MAX_ATTEMPTS,
+    retry_base_delay_seconds: row.retry_base_delay_seconds ?? DEFAULT_RETRY_BASE_DELAY_SECONDS,
     created_at: row.created_at,
   };
 }
